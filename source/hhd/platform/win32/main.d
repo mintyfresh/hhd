@@ -12,6 +12,10 @@ debug
     import std.stdio;
 }
 
+// TODO: Implement math functions
+import core.stdc.math : sinf;
+enum float PI = 3.14159265359f;
+
 /// XInput libraries in order of preference
 private immutable const(char)*[] X_INPUT_LIBRARIES = [
     "xinput1_4.dll",
@@ -19,11 +23,10 @@ private immutable const(char)*[] X_INPUT_LIBRARIES = [
     "xinput9_1_0.dll"
 ];
 
-
 __gshared private
 {
     // TODO: Extract this from global state
-    bool isRunning;
+    bool globalIsRunning;
     Win32OffscreenBuffer globalBackBuffer;
     LPDIRECTSOUNDBUFFER globalSecondaryBuffer;
 }
@@ -65,6 +68,67 @@ private
     enum WORD CHANNELS_COUNT = 2; // stereo
     enum WORD BITS_PER_SAMPLE = ushort.sizeof * 8; // 16-bit stereo
     enum WORD BLOCK_ALIGN = (CHANNELS_COUNT * BITS_PER_SAMPLE) / 8; // 4 bytes per sample
+}
+
+struct Win32SoundOutput
+{
+    int sampleRate;
+    int bytesPerSample;
+    int secondaryBufferSize;
+
+    int toneHz;
+    short toneVolume;
+    int tonePeriod;
+
+    uint currentSampleIndex;
+
+    @property
+    enum ushort channelsCount = 2; 
+}
+
+private void
+win32FillSoundBuffer(ref Win32SoundOutput soundOutput, uint byteToLock, uint bytesToWrite) nothrow @nogc
+{
+    void*[2] region;
+    DWORD[2] regionSize;
+
+    HRESULT locked = globalSecondaryBuffer.Lock(
+        byteToLock, bytesToWrite,
+        &region[0], &regionSize[0],
+        &region[1], &regionSize[1],
+        0 /* flags */
+    );
+
+    if (SUCCEEDED(locked))
+    {
+        DWORD sampleCount;
+        short* sampleOutput;
+        static foreach (index; 0..2)
+        {
+            sampleCount = regionSize[index] / soundOutput.bytesPerSample;
+            sampleOutput = cast(short*) region[index];
+
+            foreach (sampleIndex; 0..sampleCount)
+            {
+                float t = 2.0f * PI * cast(float) soundOutput.currentSampleIndex / cast(float) soundOutput.tonePeriod;
+                short sampleValue = cast(short)(sinf(t) * soundOutput.toneVolume);
+
+                *sampleOutput++ = sampleValue;
+                *sampleOutput++ = sampleValue;
+
+                soundOutput.currentSampleIndex++;
+            }
+        }
+
+        globalSecondaryBuffer.Unlock(
+            region[0], regionSize[0],
+            region[1], regionSize[1]
+        );
+    }
+    else
+    {
+        // TODO: Handle this state
+    }
 }
 
 private void
@@ -197,7 +261,7 @@ do
 
 pragma(inline, true)
 private uint
-win32CreatePixel(uint red, uint green, uint blue) nothrow @nogc
+win32CreatePixel(uint red, uint green, uint blue) pure nothrow @nogc
 {
     // Windows pixel are weird:
     // 0x xx RR GG BB (little endian)
@@ -295,14 +359,14 @@ win32WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) nothrow
         case WM_CLOSE:
         {
             // TODO: Prompt the user to confirm
-            isRunning = false;
+            globalIsRunning = false;
         }
         break;
 
         case WM_DESTROY:
         {
             // TODO: Was this an error?
-            isRunning = false;
+            globalIsRunning = false;
         }
         break;
 
@@ -329,7 +393,7 @@ win32WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) nothrow
                     case VK_ESCAPE:
                     {
                         // TODO: Prompt the user to confirm
-                        isRunning = false;
+                        globalIsRunning = false;
                     }
                     break;
 
@@ -339,7 +403,7 @@ win32WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) nothrow
                         // We probably don't need to prompt the user?
                         if (altKey)
                         {
-                            isRunning = false;
+                            globalIsRunning = false;
                         }
                     }
                     break;
@@ -461,29 +525,31 @@ main() nothrow @nogc
     int xOffset = 0;
     int yOffset = 0;
 
-    enum DWORD SAMPLE_RATE = 48_000; // Hz
-    enum WORD BYTES_PER_SAMPLE = short.sizeof * CHANNELS_COUNT; // 16-bit stereo
-    enum DWORD SECONDARY_BUFFER_SIZE = SAMPLE_RATE * BYTES_PER_SAMPLE;
+    Win32SoundOutput soundOutput;
 
-    enum DWORD TONE_HZ = 256;
-    enum WORD  TONE_VOLUME = 100;
-    enum DWORD SQUARE_WAVE_PERIOD = SAMPLE_RATE / TONE_HZ;
+    soundOutput.sampleRate = 48_000;
+    soundOutput.bytesPerSample = 4;
+    soundOutput.secondaryBufferSize = soundOutput.sampleRate * soundOutput.bytesPerSample;
+    soundOutput.toneHz = 256;
+    soundOutput.toneVolume = 300;
+    soundOutput.tonePeriod = soundOutput.sampleRate / soundOutput.toneHz;
+    soundOutput.currentSampleIndex = 0;
 
-    uint currentSampleIndex = 0;
+    win32InitDirectSound(window, soundOutput.sampleRate, soundOutput.secondaryBufferSize);
 
-    bool isSoundPlaying = false;
-    win32InitDirectSound(window, SAMPLE_RATE, SECONDARY_BUFFER_SIZE);
+    win32FillSoundBuffer(soundOutput, 0, soundOutput.secondaryBufferSize);
+    globalSecondaryBuffer.Play(0, 0, DSBPLAY_LOOPING);
 
-    isRunning = true;
+    globalIsRunning = true;
 
-    while (isRunning)
+    while (globalIsRunning)
     {
         MSG message;
         while (PeekMessage(&message, null, 0, 0, PM_REMOVE))
         {
             if (message.message == WM_QUIT)
             {
-                isRunning = false;
+                globalIsRunning = false;
             }
 
             TranslateMessage(&message);
@@ -531,59 +597,23 @@ main() nothrow @nogc
         DWORD writeCursor;
         if (SUCCEEDED(globalSecondaryBuffer.GetCurrentPosition(&playCursor, &writeCursor)))
         {
-            DWORD byteToLock = (currentSampleIndex * BYTES_PER_SAMPLE) % SECONDARY_BUFFER_SIZE;
+            DWORD byteToLock = (soundOutput.currentSampleIndex * soundOutput.bytesPerSample)
+                             % soundOutput.secondaryBufferSize;
             DWORD bytesToWrite;
 
+            // TODO: Change this to using a lower latency offset from the playcursor
             if (byteToLock > playCursor)
             {
-                bytesToWrite = (SECONDARY_BUFFER_SIZE - byteToLock) + playCursor;
+                bytesToWrite = (soundOutput.secondaryBufferSize - byteToLock) + playCursor;
             }
             else
             {
                 bytesToWrite = playCursor - byteToLock;
             }
 
-            void*[2] region;
-            DWORD[2] regionSize;
-            globalSecondaryBuffer.Lock(
-                byteToLock, bytesToWrite,
-                &region[0], &regionSize[0],
-                &region[1], &regionSize[1],
-                0 /* flags */
-            );
-
-            DWORD sampleCount;
-            short* sampleOutput;
-            static foreach (index; 0..2)
-            {
-                sampleCount = regionSize[index] / BYTES_PER_SAMPLE;
-                sampleOutput = cast(short*) region[index];
-
-                foreach (sampleIndex; 0..sampleCount)
-                {
-                    short sampleValue = (currentSampleIndex / (SQUARE_WAVE_PERIOD / 2)) % 2 == 0
-                        ? +TONE_VOLUME
-                        : -TONE_VOLUME;
-
-                    *sampleOutput++ = sampleValue;
-                    *sampleOutput++ = sampleValue;
-
-                    currentSampleIndex++;
-                }
-            }
-
-            globalSecondaryBuffer.Unlock(
-                region[0], regionSize[0],
-                region[1], regionSize[1]
-            );
+            win32FillSoundBuffer(soundOutput, byteToLock, bytesToWrite);
         }
 
-        if (!isSoundPlaying)
-        {
-            globalSecondaryBuffer.Play(0, 0, DSBPLAY_LOOPING);
-            isSoundPlaying = true;
-        }
-    
         auto dimensions = win32GetWindowDimensions(window);
 
         win32BlitBufferToWindow(
