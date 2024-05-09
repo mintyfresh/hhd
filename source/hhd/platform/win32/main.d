@@ -1,72 +1,16 @@
-module hhd.platform.win32;
+module hhd.platform.win32.main;
 
 import core.sys.windows.windows;
+import core.sys.windows.com;
+
+import hhd.platform.win32.direct_sound;
+import hhd.platform.win32.xinput;
 
 debug
 {
     import core.exception;
     import std.stdio;
 }
-
-enum : WORD
-{
-    XINPUT_GAMEPAD_DPAD_UP = 0x0001,
-    XINPUT_GAMEPAD_DPAD_DOWN = 0x0002,
-    XINPUT_GAMEPAD_DPAD_LEFT = 0x0004,
-    XINPUT_GAMEPAD_DPAD_RIGHT = 0x0008,
-    XINPUT_GAMEPAD_START = 0x0010,
-    XINPUT_GAMEPAD_BACK = 0x0020,
-    XINPUT_GAMEPAD_LEFT_THUMB = 0x0040,
-    XINPUT_GAMEPAD_RIGHT_THUMB = 0x0080,
-    XINPUT_GAMEPAD_LEFT_SHOULDER = 0x0100,
-    XINPUT_GAMEPAD_RIGHT_SHOULDER = 0x0200,
-    XINPUT_GAMEPAD_A = 0x1000,
-    XINPUT_GAMEPAD_B = 0x2000,
-    XINPUT_GAMEPAD_X = 0x4000,
-    XINPUT_GAMEPAD_Y = 0x8000
-}
-
-struct XINPUT_GAMEPAD
-{
-    WORD wButtons;
-    BYTE bLeftTrigger;
-    BYTE bRightTrigger;
-    SHORT sThumbLX;
-    SHORT sThumbLY;
-    SHORT sThumbRX;
-    SHORT sThumbRY;
-
-    bool isPressed(WORD button) const nothrow @nogc
-    {
-        return (wButtons & button) == button;
-    }
-}
-
-struct XINPUT_STATE
-{
-    DWORD dwPacketNumber;
-    XINPUT_GAMEPAD gamepad;
-}
-
-struct XINPUT_VIBRATION
-{
-    WORD wLeftMotorSpeed;
-    WORD wRightMotorSpeed;
-}
-
-extern (Windows) nothrow @nogc
-{
-    alias procXInputGetState = DWORD function(DWORD dwUserIndex, XINPUT_STATE* pState);
-    alias procXInputSetState = DWORD function(DWORD dwUserIndex, XINPUT_VIBRATION* pVibration);
-}
-
-__gshared
-{
-    procXInputGetState XInputGetState = (DWORD, XINPUT_STATE*) => ERROR_DEVICE_NOT_CONNECTED;
-    procXInputSetState XInputSetState = (DWORD, XINPUT_VIBRATION*) => ERROR_DEVICE_NOT_CONNECTED;
-}
-
-enum DWORD XUSER_MAX_COUNT = 4;
 
 /// XInput libraries in order of preference
 private immutable const(char)*[] X_INPUT_LIBRARIES = [
@@ -104,6 +48,79 @@ win32LoadXInput() nothrow @nogc
             writefln("XInputGetState: %#x", XInputGetState);
             writefln("XInputSetState: %#x", XInputSetState);
         }
+    }
+}
+
+private void
+win32InitDirectSound(HWND window, DWORD sampleRate, WORD duration) nothrow @nogc
+{
+    HMODULE directSoundLibrary = LoadLibrary("dsound.dll");
+
+    if (directSoundLibrary)
+    {
+        auto DirectSoundCreate = cast(procDirectSoundCreate) GetProcAddress(directSoundLibrary, "DirectSoundCreate");
+
+        LPDIRECTSOUND directSound;
+        if (DirectSoundCreate && SUCCEEDED(DirectSoundCreate(null, &directSound, null)))
+        {
+            debug writefln("DirectSound object created: %#x", cast(void*) directSound);
+
+            enum WORD CHANNELS_COUNT = 2; // stereo
+            enum WORD BITS_PER_SAMPLE = CHANNELS_COUNT * short.sizeof; // 16-bit stereo
+            enum WORD BLOCK_ALIGN = CHANNELS_COUNT * (BITS_PER_SAMPLE / 8); // 4 bytes per sample
+
+            DWORD bufferSize = sampleRate * (duration * CHANNELS_COUNT) * (BITS_PER_SAMPLE / 8);
+
+            WAVEFORMATEX waveFormat = {
+                wFormatTag:      WAVE_FORMAT_PCM,
+                nChannels:       CHANNELS_COUNT,
+                nSamplesPerSec:  sampleRate,
+                wBitsPerSample:  BITS_PER_SAMPLE,
+                nAvgBytesPerSec: sampleRate * BLOCK_ALIGN,
+                nBlockAlign:     BLOCK_ALIGN
+            };
+
+            if (SUCCEEDED(directSound.SetCooperativeLevel(window, DSSCL_PRIORITY)))
+            {
+                debug writeln("DirectSound cooperative level set");
+
+                DSBUFFERDESC primaryBufferDesc = {
+                    dwSize:  DSBUFFERDESC.sizeof,
+                    dwFlags: DSBCAPS_PRIMARYBUFFER
+                };
+
+                LPDIRECTSOUNDBUFFER primaryBuffer;
+                if (SUCCEEDED(directSound.CreateSoundBuffer(&primaryBufferDesc, &primaryBuffer, null)))
+                {
+                    debug writefln("Primary buffer created: %#x", cast(void*) primaryBuffer);
+
+                    auto result = primaryBuffer.SetFormat(&waveFormat);
+                    debug assert(SUCCEEDED(result), "Failed to set primary buffer format");
+                }
+
+                DSBUFFERDESC secondaryBufferDesc = {
+                    dwSize:        DSBUFFERDESC.sizeof,
+                    dwFlags:       DSBCAPS_GETCURRENTPOSITION2,
+                    dwBufferBytes: bufferSize,
+                    lpwfxFormat:   &waveFormat
+                };
+
+                LPDIRECTSOUNDBUFFER secondaryBuffer;
+                if (SUCCEEDED(directSound.CreateSoundBuffer(&secondaryBufferDesc, &secondaryBuffer, null)))
+                {
+                    debug writefln("Secondary buffer created: %#x", cast(void*) secondaryBuffer);
+                }
+            }
+            else
+            {
+                debug writeln("Failed to set DirectSound cooperative level");
+            }
+        }
+    }
+    else
+    {
+        // TODO: How should be handle this?
+        debug writeln("Failed to load DirectSound library");
     }
 }
 
@@ -300,6 +317,9 @@ win32WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) nothrow
             /// Is this key currently down?
             bool currDown = (lParam & (1 << 31)) == 0;
 
+            /// Was the ALT modifier key pressed?
+            bool altKey = (lParam & (1 << 29)) != 0;
+
             if (currDown != prevDown)
             {
                 switch (vkCode)
@@ -308,6 +328,17 @@ win32WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) nothrow
                     {
                         // TODO: Prompt the user to confirm
                         isRunning = false;
+                    }
+                    break;
+
+                    case VK_F4:
+                    {
+                        // NOTE: User explicitly closed the window
+                        // We probably don't need to prompt the user?
+                        if (altKey)
+                        {
+                            isRunning = false;
+                        }
                     }
                     break;
 
@@ -420,6 +451,8 @@ main() nothrow @nogc
         assert(window, "Failed to create window.");
         writefln("Created window: %#x", window);
     }
+
+    win32InitDirectSound(window, sampleRate: 48_000 /* Hz */, duration: 1 /* second */);
 
     isRunning = true;
 
