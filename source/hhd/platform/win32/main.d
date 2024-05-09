@@ -19,6 +19,15 @@ private immutable const(char)*[] X_INPUT_LIBRARIES = [
     "xinput9_1_0.dll"
 ];
 
+
+__gshared private
+{
+    // TODO: Extract this from global state
+    bool isRunning;
+    Win32OffscreenBuffer globalBackBuffer;
+    LPDIRECTSOUNDBUFFER globalSecondaryBuffer;
+}
+
 private void
 win32LoadXInput() nothrow @nogc
 {
@@ -51,8 +60,15 @@ win32LoadXInput() nothrow @nogc
     }
 }
 
+private
+{
+    enum WORD CHANNELS_COUNT = 2; // stereo
+    enum WORD BITS_PER_SAMPLE = ushort.sizeof * 8; // 16-bit stereo
+    enum WORD BLOCK_ALIGN = (CHANNELS_COUNT * BITS_PER_SAMPLE) / 8; // 4 bytes per sample
+}
+
 private void
-win32InitDirectSound(HWND window, DWORD sampleRate, WORD duration) nothrow @nogc
+win32InitDirectSound(HWND window, DWORD sampleRate, DWORD bufferSize) nothrow @nogc
 {
     HMODULE directSoundLibrary = LoadLibrary("dsound.dll");
 
@@ -64,12 +80,6 @@ win32InitDirectSound(HWND window, DWORD sampleRate, WORD duration) nothrow @nogc
         if (DirectSoundCreate && SUCCEEDED(DirectSoundCreate(null, &directSound, null)))
         {
             debug writefln("DirectSound object created: %#x", cast(void*) directSound);
-
-            enum WORD CHANNELS_COUNT = 2; // stereo
-            enum WORD BITS_PER_SAMPLE = CHANNELS_COUNT * short.sizeof; // 16-bit stereo
-            enum WORD BLOCK_ALIGN = CHANNELS_COUNT * (BITS_PER_SAMPLE / 8); // 4 bytes per sample
-
-            DWORD bufferSize = sampleRate * (duration * CHANNELS_COUNT) * (BITS_PER_SAMPLE / 8);
 
             WAVEFORMATEX waveFormat = {
                 wFormatTag:      WAVE_FORMAT_PCM,
@@ -105,10 +115,9 @@ win32InitDirectSound(HWND window, DWORD sampleRate, WORD duration) nothrow @nogc
                     lpwfxFormat:   &waveFormat
                 };
 
-                LPDIRECTSOUNDBUFFER secondaryBuffer;
-                if (SUCCEEDED(directSound.CreateSoundBuffer(&secondaryBufferDesc, &secondaryBuffer, null)))
+                if (SUCCEEDED(directSound.CreateSoundBuffer(&secondaryBufferDesc, &globalSecondaryBuffer, null)))
                 {
-                    debug writefln("Secondary buffer created: %#x", cast(void*) secondaryBuffer);
+                    debug writefln("Secondary buffer created: %#x", cast(void*) globalSecondaryBuffer);
                 }
             }
             else
@@ -165,13 +174,6 @@ struct Win32WindowDimensions
 {
     LONG width;
     LONG height;
-}
-
-__gshared private
-{
-    // TODO: Extract this from global state
-    bool isRunning;
-    Win32OffscreenBuffer globalBackBuffer;
 }
 
 private Win32WindowDimensions
@@ -420,7 +422,7 @@ main() nothrow @nogc
     }
 
     WNDCLASS windowClass = {
-        style: CS_HREDRAW | CS_VREDRAW,
+        style: CS_HREDRAW | CS_VREDRAW | CS_OWNDC,
         hInstance: instance,
         lpszClassName: "HHDWindowClass",
         lpfnWndProc: windowProc
@@ -452,12 +454,27 @@ main() nothrow @nogc
         writefln("Created window: %#x", window);
     }
 
-    win32InitDirectSound(window, sampleRate: 48_000 /* Hz */, duration: 1 /* second */);
-
-    isRunning = true;
+    // NOTE: Since we're using `CS_OWNDC`,
+    // we can get the device context once and use it for the lifetime of the window
+    HDC deviceContext = GetDC(window);
 
     int xOffset = 0;
     int yOffset = 0;
+
+    enum DWORD SAMPLE_RATE = 48_000; // Hz
+    enum WORD BYTES_PER_SAMPLE = short.sizeof * CHANNELS_COUNT; // 16-bit stereo
+    enum DWORD SECONDARY_BUFFER_SIZE = SAMPLE_RATE * BYTES_PER_SAMPLE;
+
+    enum DWORD TONE_HZ = 256;
+    enum WORD  TONE_VOLUME = 100;
+    enum DWORD SQUARE_WAVE_PERIOD = SAMPLE_RATE / TONE_HZ;
+
+    uint currentSampleIndex = 0;
+
+    bool isSoundPlaying = false;
+    win32InitDirectSound(window, SAMPLE_RATE, SECONDARY_BUFFER_SIZE);
+
+    isRunning = true;
 
     while (isRunning)
     {
@@ -509,10 +526,64 @@ main() nothrow @nogc
         renderFunkyGradient(globalBackBuffer, xOffset, yOffset);
         xOffset++;
         yOffset++;
-    
-        HDC deviceContext = GetDC(window);
-        scope (exit) ReleaseDC(window, deviceContext);
 
+        DWORD playCursor;
+        DWORD writeCursor;
+        if (SUCCEEDED(globalSecondaryBuffer.GetCurrentPosition(&playCursor, &writeCursor)))
+        {
+            DWORD byteToLock = (currentSampleIndex * BYTES_PER_SAMPLE) % SECONDARY_BUFFER_SIZE;
+            DWORD bytesToWrite;
+
+            if (byteToLock > playCursor)
+            {
+                bytesToWrite = (SECONDARY_BUFFER_SIZE - byteToLock) + playCursor;
+            }
+            else
+            {
+                bytesToWrite = playCursor - byteToLock;
+            }
+
+            void*[2] region;
+            DWORD[2] regionSize;
+            globalSecondaryBuffer.Lock(
+                byteToLock, bytesToWrite,
+                &region[0], &regionSize[0],
+                &region[1], &regionSize[1],
+                0 /* flags */
+            );
+
+            DWORD sampleCount;
+            short* sampleOutput;
+            static foreach (index; 0..2)
+            {
+                sampleCount = regionSize[index] / BYTES_PER_SAMPLE;
+                sampleOutput = cast(short*) region[index];
+
+                foreach (sampleIndex; 0..sampleCount)
+                {
+                    short sampleValue = (currentSampleIndex / (SQUARE_WAVE_PERIOD / 2)) % 2 == 0
+                        ? +TONE_VOLUME
+                        : -TONE_VOLUME;
+
+                    *sampleOutput++ = sampleValue;
+                    *sampleOutput++ = sampleValue;
+
+                    currentSampleIndex++;
+                }
+            }
+
+            globalSecondaryBuffer.Unlock(
+                region[0], regionSize[0],
+                region[1], regionSize[1]
+            );
+        }
+
+        if (!isSoundPlaying)
+        {
+            globalSecondaryBuffer.Play(0, 0, DSBPLAY_LOOPING);
+            isSoundPlaying = true;
+        }
+    
         auto dimensions = win32GetWindowDimensions(window);
 
         win32BlitBufferToWindow(

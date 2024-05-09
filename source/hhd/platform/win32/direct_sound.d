@@ -86,6 +86,16 @@ enum : DWORD
     DSBCAPS_TRUEPLAYPOSITION    = 0x00080000,
 }
 
+enum : DWORD
+{
+    DSBPLAY_LOOPING              = 0x00000001,
+    DSBPLAY_LOCHARDWARE          = 0x00000002,
+    DSBPLAY_LOCSOFTWARE          = 0x00000004,
+    DSBPLAY_TERMINATEBY_TIME     = 0x00000008,
+    DSBPLAY_TERMINATEBY_DISTANCE = 0x00000010,
+    DSBPLAY_TERMINATEBY_PRIORITY = 0x00000020,
+}
+
 mixin template COMVTable(Interface)
 {
     alias STDMETHOD(TList...) = extern (Windows) HRESULT function(Interface*, TList) nothrow @nogc;
