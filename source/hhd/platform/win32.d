@@ -5,7 +5,106 @@ import core.sys.windows.windows;
 debug
 {
     import core.exception;
-    import core.stdc.stdio;
+    import std.stdio;
+}
+
+enum : WORD
+{
+    XINPUT_GAMEPAD_DPAD_UP = 0x0001,
+    XINPUT_GAMEPAD_DPAD_DOWN = 0x0002,
+    XINPUT_GAMEPAD_DPAD_LEFT = 0x0004,
+    XINPUT_GAMEPAD_DPAD_RIGHT = 0x0008,
+    XINPUT_GAMEPAD_START = 0x0010,
+    XINPUT_GAMEPAD_BACK = 0x0020,
+    XINPUT_GAMEPAD_LEFT_THUMB = 0x0040,
+    XINPUT_GAMEPAD_RIGHT_THUMB = 0x0080,
+    XINPUT_GAMEPAD_LEFT_SHOULDER = 0x0100,
+    XINPUT_GAMEPAD_RIGHT_SHOULDER = 0x0200,
+    XINPUT_GAMEPAD_A = 0x1000,
+    XINPUT_GAMEPAD_B = 0x2000,
+    XINPUT_GAMEPAD_X = 0x4000,
+    XINPUT_GAMEPAD_Y = 0x8000
+}
+
+struct XINPUT_GAMEPAD
+{
+    WORD wButtons;
+    BYTE bLeftTrigger;
+    BYTE bRightTrigger;
+    SHORT sThumbLX;
+    SHORT sThumbLY;
+    SHORT sThumbRX;
+    SHORT sThumbRY;
+
+    bool isPressed(WORD button) const nothrow @nogc
+    {
+        return (wButtons & button) == button;
+    }
+}
+
+struct XINPUT_STATE
+{
+    DWORD dwPacketNumber;
+    XINPUT_GAMEPAD gamepad;
+}
+
+struct XINPUT_VIBRATION
+{
+    WORD wLeftMotorSpeed;
+    WORD wRightMotorSpeed;
+}
+
+extern (Windows) nothrow @nogc
+{
+    alias procXInputGetState = DWORD function(DWORD dwUserIndex, XINPUT_STATE* pState);
+    alias procXInputSetState = DWORD function(DWORD dwUserIndex, XINPUT_VIBRATION* pVibration);
+}
+
+__gshared
+{
+    procXInputGetState XInputGetState = (DWORD, XINPUT_STATE*) => ERROR_DEVICE_NOT_CONNECTED;
+    procXInputSetState XInputSetState = (DWORD, XINPUT_VIBRATION*) => ERROR_DEVICE_NOT_CONNECTED;
+}
+
+enum DWORD XUSER_MAX_COUNT = 4;
+
+/// XInput libraries in order of preference
+private immutable const(char)*[] X_INPUT_LIBRARIES = [
+    "xinput1_4.dll",
+    "xinput1_3.dll",
+    "xinput9_1_0.dll"
+];
+
+private void
+win32LoadXInput() nothrow @nogc
+{
+    HMODULE xInputLibrary;
+
+    static foreach (library; X_INPUT_LIBRARIES)
+    {
+        if (xInputLibrary is null)
+        {
+            xInputLibrary = LoadLibrary(library);
+
+            debug if (xInputLibrary)
+            {
+                import std.string : fromStringz;
+                writeln("Loaded XInput library: ", library.fromStringz());
+            }
+        }
+    }
+
+    if (xInputLibrary)
+    {
+        XInputGetState = cast(procXInputGetState) GetProcAddress(xInputLibrary, "XInputGetState");
+        XInputSetState = cast(procXInputSetState) GetProcAddress(xInputLibrary, "XInputSetState");
+
+        debug
+        {
+            writefln("XInputGetState: %#x", XInputGetState);
+            writefln("XInputSetState: %#x", XInputSetState);
+        }
+    }
 }
 
 struct Win32OffscreenBuffer
@@ -51,15 +150,20 @@ struct Win32WindowDimensions
     LONG height;
 }
 
-private
+__gshared private
 {
     // TODO: Extract this from global state
-    __gshared bool isRunning;
-    __gshared Win32OffscreenBuffer globalBackBuffer;
+    bool isRunning;
+    Win32OffscreenBuffer globalBackBuffer;
 }
 
 private Win32WindowDimensions
 win32GetWindowDimensions(HWND window) nothrow @nogc
+in
+{
+    assert(window, "Invalid window handle");
+}
+do
 {
     Win32WindowDimensions result;
 
@@ -145,10 +249,10 @@ win32ResizeDIBSection(ref Win32OffscreenBuffer buffer, int width, int height) no
 }
 
 private void
-win32DrawBufferToWindow(
-    HDC deviceContext, in ref Win32OffscreenBuffer buffer,
-    LONG windowWidth, LONG windowHeight,
-    int x, int y, int width, int height
+win32BlitBufferToWindow(
+    in ref Win32OffscreenBuffer buffer,
+    HDC deviceContext,
+    LONG windowWidth, LONG windowHeight
 ) nothrow @nogc
 {
     // TODO: Aspect ratio correction
@@ -162,81 +266,88 @@ win32DrawBufferToWindow(
     );
 }
 
-extern (Windows)
-LRESULT
+extern (Windows) LRESULT
 win32WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) nothrow @nogc
 {
     LRESULT result;
 
-    try
+    switch (message)
     {
-        switch (message)
+        case WM_CLOSE:
         {
-            case WM_CLOSE:
+            // TODO: Prompt the user to confirm
+            isRunning = false;
+        }
+        break;
+
+        case WM_DESTROY:
+        {
+            // TODO: Was this an error?
+            isRunning = false;
+        }
+        break;
+
+        case WM_KEYUP:
+        case WM_KEYDOWN:
+        case WM_SYSKEYUP:
+        case WM_SYSKEYDOWN:
+        {
+            // TODO: Handle keyboard input
+            uint vkCode = cast(uint) wParam;
+
+            /// Was this key down before this event?
+            bool prevDown = (lParam & (1 << 30)) != 0;
+            /// Is this key currently down?
+            bool currDown = (lParam & (1 << 31)) == 0;
+
+            if (currDown != prevDown)
             {
-                // TODO: Prompt the user to confirm
-                isRunning = false;
-            }
-            break;
+                switch (vkCode)
+                {
+                    case VK_ESCAPE:
+                    {
+                        // TODO: Prompt the user to confirm
+                        isRunning = false;
+                    }
+                    break;
 
-            case WM_DESTROY:
-            {
-                // TODO: Was this an error?
-                isRunning = false;
-            }
-            break;
-
-            // case WM_ACTIVATEAPP:
-            // {
-            //     debug printf("Message: WM_ACTIVEAPP\n");
-            // }
-            // break;
-
-            case WM_PAINT:
-            {
-                PAINTSTRUCT paint;
-                HDC deviceContext = BeginPaint(window, &paint);
-
-                auto dimensions = win32GetWindowDimensions(window);
-
-                win32DrawBufferToWindow(
-                    deviceContext, globalBackBuffer,
-                    dimensions.width, dimensions.height,
-                    paint.rcPaint.left, paint.rcPaint.top,
-                    paint.rcPaint.right, paint.rcPaint.bottom
-                );
-
-                EndPaint(window, &paint);
-            }
-            break;
-
-            default:
-            {
-                result = DefWindowProc(window, message, wParam, lParam);
+                    default:
+                    {
+                        // TODO: Add handling for remaining keys
+                        debug writefln("Unhandled key: %c (%#x)", cast(char) vkCode, vkCode);
+                    }
+                    break;
+                }
             }
         }
-    }
-    catch (core.exception.AssertError e) // TODO: Remove this in release (only debug can raise exceptions)
-    {
-        debug
-        {
-            enum MAX_ERROR_LENGTH = 2500;
-            char[MAX_ERROR_LENGTH + 1] buffer;
-            string error = e.toString();
-            size_t length = error.length > MAX_ERROR_LENGTH ? MAX_ERROR_LENGTH : error.length;
-            buffer[0..length] = error[0..length];
-            buffer[$ - 1] = 0; // Ensure null-termination
-            printf("Error: %s\n", buffer.ptr);
-        }
+        break;
 
-        PostQuitMessage(-1);
+        case WM_PAINT:
+        {
+            PAINTSTRUCT paint;
+            HDC deviceContext = BeginPaint(window, &paint);
+
+            auto dimensions = win32GetWindowDimensions(window);
+
+            win32BlitBufferToWindow(
+                globalBackBuffer, deviceContext,
+                dimensions.width, dimensions.height
+            );
+
+            EndPaint(window, &paint);
+        }
+        break;
+
+        default:
+        {
+            result = DefWindowProc(window, message, wParam, lParam);
+        }
     }
 
     return result;
 }
 
-extern (Windows)
-int
+extern (Windows) int
 main() nothrow @nogc
 {
     HINSTANCE instance = GetModuleHandle(NULL);
@@ -244,16 +355,44 @@ main() nothrow @nogc
     debug
     {
         assert(instance, "Failed to acquire HINSTANCE");
-        printf("HINSTANCE: %p\n", instance);
+        writefln("HINSTANCE: %#x", instance);
     }
 
+    win32LoadXInput();
     win32ResizeDIBSection(globalBackBuffer, 1280, 720);
+
+    debug
+    {
+        // NOTE: In debug mode, `debug { }` blocks might raise assert errors
+        // Windows doesn't like it when you throw exceptions from the window proc, especially D exceptions.
+        // Handle them here and exit gracefully.
+        WNDPROC windowProc = (window, message, wParam, lParam) nothrow @nogc {
+            LRESULT result;
+
+            try
+            {
+                result = win32WindowProc(window, message, wParam, lParam);
+            }
+            catch (core.exception.AssertError error)
+            {
+                debug writeln("Error: ", error);
+                PostQuitMessage(-1);
+            }
+
+            return result;
+        };
+    }
+    else
+    {
+        // NOTE: In release mode, `nothrow` means no exceptions can be thrown.
+        WNDPROC windowProc = &win32WindowProc;
+    }
 
     WNDCLASS windowClass = {
         style: CS_HREDRAW | CS_VREDRAW,
         hInstance: instance,
         lpszClassName: "HHDWindowClass",
-        lpfnWndProc: &win32WindowProc
+        lpfnWndProc: windowProc
     };
 
     ATOM registerWindowResult = RegisterClass(&windowClass);
@@ -261,7 +400,7 @@ main() nothrow @nogc
     debug
     {
         assert(registerWindowResult, "Failed to register window class.");
-        printf("Regsitered window class: %d\n", registerWindowResult);
+        writefln("Regsitered window class: %#x", registerWindowResult);
     }
 
     HWND window = CreateWindowEx(
@@ -279,7 +418,7 @@ main() nothrow @nogc
     debug
     {
         assert(window, "Failed to create window.");
-        printf("Created window successfully\n");
+        writefln("Created window: %#x", window);
     }
 
     isRunning = true;
@@ -301,6 +440,39 @@ main() nothrow @nogc
             DispatchMessage(&message);
         }
 
+        // TODO: Should this be polled more frequently?
+        foreach (userIndex; 0..XUSER_MAX_COUNT)
+        {
+            XINPUT_STATE state;
+            if (XInputGetState(userIndex, &state) == ERROR_SUCCESS)
+            {
+                // NOTE: Controller connected
+                bool dpadUp = state.gamepad.isPressed(XINPUT_GAMEPAD_DPAD_UP);
+                bool dpadDown = state.gamepad.isPressed(XINPUT_GAMEPAD_DPAD_DOWN);
+                bool dpadLeft = state.gamepad.isPressed(XINPUT_GAMEPAD_DPAD_LEFT);
+                bool dpadRight = state.gamepad.isPressed(XINPUT_GAMEPAD_DPAD_RIGHT);
+
+                bool start = state.gamepad.isPressed(XINPUT_GAMEPAD_START);
+                bool back = state.gamepad.isPressed(XINPUT_GAMEPAD_BACK);
+
+                bool leftShoulder = state.gamepad.isPressed(XINPUT_GAMEPAD_LEFT_SHOULDER);
+                bool rightShoulder = state.gamepad.isPressed(XINPUT_GAMEPAD_RIGHT_SHOULDER);
+
+                bool aButton = state.gamepad.isPressed(XINPUT_GAMEPAD_A);
+                bool bButton = state.gamepad.isPressed(XINPUT_GAMEPAD_B);
+                bool xButton = state.gamepad.isPressed(XINPUT_GAMEPAD_X);
+                bool yButton = state.gamepad.isPressed(XINPUT_GAMEPAD_Y);
+
+                SHORT stickX = state.gamepad.sThumbLX;
+                SHORT stickY = state.gamepad.sThumbLY;
+            }
+            else
+            {
+                // NOTE: Controller not connected
+                // TODO: Display or handle controllers going away?
+            }
+        }
+
         renderFunkyGradient(globalBackBuffer, xOffset, yOffset);
         xOffset++;
         yOffset++;
@@ -310,10 +482,9 @@ main() nothrow @nogc
 
         auto dimensions = win32GetWindowDimensions(window);
 
-        win32DrawBufferToWindow(
-            deviceContext, globalBackBuffer,
-            dimensions.width, dimensions.height,
-            0, 0, 0, 0
+        win32BlitBufferToWindow(
+            globalBackBuffer, deviceContext,
+            dimensions.width, dimensions.height
         );
     }
 
