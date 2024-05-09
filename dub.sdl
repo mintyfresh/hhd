@@ -1,0 +1,5 @@
+name "hhd"
+description "A minimal D application."
+authors "Minty Fresh"
+copyright "Copyright © 2024, Minty Fresh"
+license "BSL-1.0"
