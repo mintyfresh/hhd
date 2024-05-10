@@ -135,13 +135,24 @@ private void
 win32InitDirectSound(HWND window, DWORD sampleRate, DWORD bufferSize) nothrow @nogc
 {
     HMODULE directSoundLibrary = LoadLibrary("dsound.dll");
+    debug writeln("Loaded DirectSound library: ", "dsound.dll");
 
     if (directSoundLibrary)
     {
         auto DirectSoundCreate = cast(procDirectSoundCreate) GetProcAddress(directSoundLibrary, "DirectSoundCreate");
 
+        if (!DirectSoundCreate)
+        {
+            // TODO: User might have no sound device?
+            // How should be handle this?
+            debug writeln("Failed to acquire ref to DirectSoundCreate");
+            return;
+        }
+
         LPDIRECTSOUND directSound;
-        if (DirectSoundCreate && SUCCEEDED(DirectSoundCreate(null, &directSound, null)))
+        HRESULT result = DirectSoundCreate(null, &directSound, null);
+
+        if (SUCCEEDED(result))
         {
             debug writefln("DirectSound object created: %#x", cast(void*) directSound);
 
@@ -154,7 +165,9 @@ win32InitDirectSound(HWND window, DWORD sampleRate, DWORD bufferSize) nothrow @n
                 nBlockAlign:     BLOCK_ALIGN
             };
 
-            if (SUCCEEDED(directSound.SetCooperativeLevel(window, DSSCL_PRIORITY)))
+            result = directSound.SetCooperativeLevel(window, DSSCL_PRIORITY);
+
+            if (SUCCEEDED(result))
             {
                 debug writeln("DirectSound cooperative level set");
 
@@ -168,7 +181,7 @@ win32InitDirectSound(HWND window, DWORD sampleRate, DWORD bufferSize) nothrow @n
                 {
                     debug writefln("Primary buffer created: %#x", cast(void*) primaryBuffer);
 
-                    auto result = primaryBuffer.SetFormat(&waveFormat);
+                    result = primaryBuffer.SetFormat(&waveFormat);
                     debug assert(SUCCEEDED(result), "Failed to set primary buffer format");
                 }
 
@@ -186,8 +199,12 @@ win32InitDirectSound(HWND window, DWORD sampleRate, DWORD bufferSize) nothrow @n
             }
             else
             {
-                debug writeln("Failed to set DirectSound cooperative level");
+                debug writeln("Failed to set DirectSound cooperative level: ", result);
             }
+        }
+        else
+        {
+            debug writeln("Failed to create DirectSound object: ", result);
         }
     }
     else
@@ -531,14 +548,21 @@ main() nothrow @nogc
     soundOutput.bytesPerSample = 4;
     soundOutput.secondaryBufferSize = soundOutput.sampleRate * soundOutput.bytesPerSample;
     soundOutput.toneHz = 256;
-    soundOutput.toneVolume = 300;
+    soundOutput.toneVolume = 500;
     soundOutput.tonePeriod = soundOutput.sampleRate / soundOutput.toneHz;
     soundOutput.currentSampleIndex = 0;
 
     win32InitDirectSound(window, soundOutput.sampleRate, soundOutput.secondaryBufferSize);
 
-    win32FillSoundBuffer(soundOutput, 0, soundOutput.secondaryBufferSize);
-    globalSecondaryBuffer.Play(0, 0, DSBPLAY_LOOPING);
+    if (globalSecondaryBuffer)
+    {
+        win32FillSoundBuffer(soundOutput, 0, soundOutput.secondaryBufferSize);
+        globalSecondaryBuffer.Play(0, 0, DSBPLAY_LOOPING);
+    }
+    else debug
+    {
+        writeln("No sound output available.");
+    }
 
     globalIsRunning = true;
 
@@ -595,7 +619,7 @@ main() nothrow @nogc
 
         DWORD playCursor;
         DWORD writeCursor;
-        if (SUCCEEDED(globalSecondaryBuffer.GetCurrentPosition(&playCursor, &writeCursor)))
+        if (globalSecondaryBuffer && SUCCEEDED(globalSecondaryBuffer.GetCurrentPosition(&playCursor, &writeCursor)))
         {
             DWORD byteToLock = (soundOutput.currentSampleIndex * soundOutput.bytesPerSample)
                              % soundOutput.secondaryBufferSize;
