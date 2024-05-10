@@ -61,4 +61,3 @@ __gshared
 }
 
 enum DWORD XUSER_MAX_COUNT = 4;
-

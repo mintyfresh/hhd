@@ -176,4 +176,3 @@ extern (Windows) nothrow @nogc
 {
     alias procDirectSoundCreate = HRESULT function(LPGUID pcGuidDevice, LPDIRECTSOUND* ppDS, LPUNKNOWN pUnkOuter);
 }
-

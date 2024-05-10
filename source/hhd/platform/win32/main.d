@@ -1,8 +1,8 @@
 module hhd.platform.win32.main;
 
 import core.sys.windows.windows;
-import core.sys.windows.com;
 
+import hhd.game.main;
 import hhd.platform.win32.direct_sound;
 import hhd.platform.win32.xinput;
 
@@ -11,6 +11,26 @@ debug
     import core.exception;
     import std.stdio;
 }
+
+/+ TODO:
+ + - Save game data
+ + - Get handle to executable
+ + - Asset loading paths
+ + - Threading and job system
+ +   - Worker threads
+ +   - Job queue
+ +   - Sleep functions
+ + - Raw input
+ + - Multi-monitor support
+ + - Fullscreen support
+ + - Cursor control and visibility
+ + - Handle being minimized/backgrounded
+ + - Controller rumble
+ + - Blit optimization (hardware rendering?)
+ + - Keyboard layouts and input mappings
+ + - Gamepad deadzones
+ + - More!!
+ +/
 
 // TODO: Implement math functions
 import core.stdc.math : sinf;
@@ -283,27 +303,6 @@ win32CreatePixel(uint red, uint green, uint blue) pure nothrow @nogc
     // Windows pixel are weird:
     // 0x xx RR GG BB (little endian)
     return (red << 16) | (green << 8) | (blue << 0);
-}
-
-private void
-renderFunkyGradient(in ref Win32OffscreenBuffer buffer, int xOffset, int yOffset) nothrow @nogc
-{
-    ubyte* row = cast(ubyte*) buffer.memory;
-
-    foreach (y; 0..buffer.height)
-    {
-        uint* pixel = cast(uint*) row;
-
-        foreach (x; 0..buffer.width)
-        {
-            ubyte blue  = cast(ubyte)(x + xOffset);
-            ubyte green = cast(ubyte)(y + yOffset);
-
-            *pixel++ = win32CreatePixel(0, green, blue);
-        }
-
-        row += buffer.pitch;
-    }
 }
 
 private void
@@ -646,9 +645,14 @@ main() nothrow @nogc
             }
         }
 
-        renderFunkyGradient(globalBackBuffer, xOffset, yOffset);
-        xOffset++;
-        yOffset++;
+        GameOffscreenBuffer gameOffscreenBuffer = {
+            memory: globalBackBuffer.memory,
+            width:  globalBackBuffer.width,
+            height: globalBackBuffer.height,
+            pitch:  globalBackBuffer.pitch
+        };
+
+        gameUpdateAndRender(gameOffscreenBuffer, xOffset++, yOffset);
 
         DWORD playCursor;
         DWORD writeCursor;
@@ -658,7 +662,6 @@ main() nothrow @nogc
                              % soundOutput.secondaryBufferSize;
             DWORD bytesToWrite;
 
-            // TODO: Change this to using a lower latency offset from the playcursor
             if (byteToLock > playCursor)
             {
                 bytesToWrite = (soundOutput.secondaryBufferSize - byteToLock) + playCursor;
