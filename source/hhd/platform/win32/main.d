@@ -366,6 +366,35 @@ win32BlitBufferToWindow(
     );
 }
 
+pragma(inline, true) private long
+win32GetPerformanceCounter() nothrow @nogc
+{
+    LARGE_INTEGER result;
+    QueryPerformanceCounter(&result);
+
+    return result.QuadPart;
+}
+
+pragma(inline, true) private long
+win32GetPerformanceFrequency() nothrow @nogc
+{
+    LARGE_INTEGER result;
+    QueryPerformanceFrequency(&result);
+
+    return result.QuadPart;
+}
+
+pragma(inline, true) private ulong
+win32GetCycleCounter() nothrow @nogc
+{
+    asm nothrow @nogc
+    {
+        naked;
+        rdtsc;
+        ret;
+    }
+}
+
 extern (Windows) LRESULT
 win32WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) nothrow @nogc
 {
@@ -547,7 +576,7 @@ main() nothrow @nogc
     soundOutput.sampleRate = 48_000;
     soundOutput.bytesPerSample = 4;
     soundOutput.secondaryBufferSize = soundOutput.sampleRate * soundOutput.bytesPerSample;
-    soundOutput.toneHz = 256;
+    soundOutput.toneHz = 530;
     soundOutput.toneVolume = 500;
     soundOutput.tonePeriod = soundOutput.sampleRate / soundOutput.toneHz;
     soundOutput.currentSampleIndex = 0;
@@ -565,6 +594,10 @@ main() nothrow @nogc
     }
 
     globalIsRunning = true;
+
+    immutable long perfCounterFrequency = win32GetPerformanceFrequency();
+    long lastFrameCounter = win32GetPerformanceCounter();
+    ulong lastCycleCounter = win32GetCycleCounter();
 
     while (globalIsRunning)
     {
@@ -644,6 +677,23 @@ main() nothrow @nogc
             globalBackBuffer, deviceContext,
             dimensions.width, dimensions.height
         );
+
+        ulong thisCycleCounter = win32GetCycleCounter();
+        long thisFrameCounter = win32GetPerformanceCounter();
+        long cyclesElapsed = thisCycleCounter - lastCycleCounter;
+        long counterElapsed = thisFrameCounter - lastFrameCounter;
+
+        float millisPerFrame = (1000.0f * counterElapsed) / perfCounterFrequency;
+        float fps = cast(float)(perfCounterFrequency) / cast(float)(counterElapsed);
+
+        debug
+        {
+            enum float MEGACYCLE = 1_000_000.0f;
+            writefln("Frame time: %.2fms/f (%.2f FPS) %.2fMC/f", millisPerFrame, fps, cyclesElapsed / MEGACYCLE);
+        }
+
+        lastFrameCounter = thisFrameCounter;
+        lastCycleCounter = thisCycleCounter;
     }
 
     return 0;
