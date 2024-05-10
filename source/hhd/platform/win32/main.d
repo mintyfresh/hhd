@@ -2,7 +2,8 @@ module hhd.platform.win32.main;
 
 import core.sys.windows.windows;
 
-import hhd.game.main;
+import hhd.math;
+import hhd.platform.common;
 import hhd.platform.win32.direct_sound;
 import hhd.platform.win32.xinput;
 
@@ -31,10 +32,6 @@ debug
  + - Gamepad deadzones
  + - More!!
  +/
-
-// TODO: Implement math functions
-import core.stdc.math : sinf;
-enum float PI = 3.14159265359f;
 
 /// XInput libraries in order of preference
 private immutable const(char)*[] X_INPUT_LIBRARIES = [
@@ -83,13 +80,6 @@ win32LoadXInput() nothrow @nogc
     }
 }
 
-private
-{
-    enum WORD CHANNELS_COUNT = 2; // stereo
-    enum WORD BITS_PER_SAMPLE = ushort.sizeof * 8; // 16-bit stereo
-    enum WORD BLOCK_ALIGN = (CHANNELS_COUNT * BITS_PER_SAMPLE) / 8; // 4 bytes per sample
-}
-
 struct Win32SoundOutput
 {
     int sampleRate;
@@ -100,6 +90,7 @@ struct Win32SoundOutput
     short toneVolume;
     int tonePeriod;
 
+    int latencyInSamples;
     uint currentSampleIndex;
 
     @property
@@ -107,7 +98,46 @@ struct Win32SoundOutput
 }
 
 private void
-win32FillSoundBuffer(ref Win32SoundOutput soundOutput, uint byteToLock, uint bytesToWrite) nothrow @nogc
+win32ClearSoundBuffer(ref Win32SoundOutput soundOutput) nothrow @nogc
+{
+    void*[2] region;
+    DWORD[2] regionSize;
+
+    HRESULT locked = globalSecondaryBuffer.Lock(
+        0, soundOutput.secondaryBufferSize,
+        &region[0], &regionSize[0],
+        &region[1], &regionSize[1],
+        0 /* flags */
+    );
+
+    if (SUCCEEDED(locked))
+    {
+        ubyte* outputSamples;
+
+        static foreach (index; 0..2)
+        {
+            outputSamples = cast(ubyte*) region[index];
+            outputSamples[0..regionSize[index]] = 0;
+        }
+
+        globalSecondaryBuffer.Unlock(
+            region[0], regionSize[0],
+            region[1], regionSize[1]
+        );
+    }
+    else
+    {
+        debug writeln("Failed to lock sound buffer for clearing");
+    }
+}
+
+private void
+win32FillSoundBuffer(
+    ref Win32SoundOutput soundOutput,
+    in ref GameSoundOutputBuffer sourceBuffer,
+    uint byteToLock,
+    uint bytesToWrite
+) nothrow @nogc
 {
     void*[2] region;
     DWORD[2] regionSize;
@@ -122,19 +152,17 @@ win32FillSoundBuffer(ref Win32SoundOutput soundOutput, uint byteToLock, uint byt
     if (SUCCEEDED(locked))
     {
         DWORD sampleCount;
-        short* sampleOutput;
+        size_t inputIndex;
+        short* outputSamples;
         static foreach (index; 0..2)
         {
+            outputSamples = cast(short*) region[index];
             sampleCount = regionSize[index] / soundOutput.bytesPerSample;
-            sampleOutput = cast(short*) region[index];
 
             foreach (sampleIndex; 0..sampleCount)
             {
-                float t = 2.0f * PI * cast(float) soundOutput.currentSampleIndex / cast(float) soundOutput.tonePeriod;
-                short sampleValue = cast(short)(sinf(t) * soundOutput.toneVolume);
-
-                *sampleOutput++ = sampleValue;
-                *sampleOutput++ = sampleValue;
+                *outputSamples++ = sourceBuffer.samples[inputIndex++];
+                *outputSamples++ = sourceBuffer.samples[inputIndex++];
 
                 soundOutput.currentSampleIndex++;
             }
@@ -175,6 +203,10 @@ win32InitDirectSound(HWND window, DWORD sampleRate, DWORD bufferSize) nothrow @n
         if (SUCCEEDED(result))
         {
             debug writefln("DirectSound object created: %#x", cast(void*) directSound);
+
+            enum WORD CHANNELS_COUNT = 2; // stereo
+            enum WORD BITS_PER_SAMPLE = ushort.sizeof * 8; // 16-bit stereo
+            enum WORD BLOCK_ALIGN = (CHANNELS_COUNT * BITS_PER_SAMPLE) / 8; // 4 bytes per sample
 
             WAVEFORMATEX waveFormat = {
                 wFormatTag:      WAVE_FORMAT_PCM,
@@ -578,13 +610,13 @@ main() nothrow @nogc
     soundOutput.toneHz = 530;
     soundOutput.toneVolume = 500;
     soundOutput.tonePeriod = soundOutput.sampleRate / soundOutput.toneHz;
-    soundOutput.currentSampleIndex = 0;
+    soundOutput.latencyInSamples = soundOutput.sampleRate / 15;
 
     win32InitDirectSound(window, soundOutput.sampleRate, soundOutput.secondaryBufferSize);
 
     if (globalSecondaryBuffer)
     {
-        win32FillSoundBuffer(soundOutput, 0, soundOutput.secondaryBufferSize);
+        win32ClearSoundBuffer(soundOutput);
         globalSecondaryBuffer.Play(0, 0, DSBPLAY_LOOPING);
     }
     else debug
@@ -593,6 +625,14 @@ main() nothrow @nogc
     }
 
     globalIsRunning = true;
+
+    // TODO: Do we need this much space?
+    short* gameSoundSamples = cast(short*) VirtualAlloc(
+        null,
+        soundOutput.secondaryBufferSize,
+        MEM_RESERVE | MEM_COMMIT,
+        PAGE_READWRITE
+    );
 
     immutable long perfCounterFrequency = win32GetPerformanceFrequency();
     long lastFrameCounter = win32GetPerformanceCounter();
@@ -635,8 +675,13 @@ main() nothrow @nogc
                 bool xButton = state.gamepad.isPressed(XINPUT_GAMEPAD_X);
                 bool yButton = state.gamepad.isPressed(XINPUT_GAMEPAD_Y);
 
-                SHORT stickX = state.gamepad.sThumbLX;
-                SHORT stickY = state.gamepad.sThumbLY;
+                short stickX = state.gamepad.sThumbLX;
+                short stickY = state.gamepad.sThumbLY;
+
+                // TODO: Handle deadzones on thumbsticks
+
+                soundOutput.toneHz = 512 + cast(int)(256.0f * (cast(float)(stickY) / 30_000.0f));
+                soundOutput.tonePeriod = soundOutput.sampleRate / soundOutput.toneHz;
             }
             else
             {
@@ -644,6 +689,39 @@ main() nothrow @nogc
                 // TODO: Display or handle controllers going away?
             }
         }
+
+        bool soundIsValid;
+        DWORD byteToLock, bytesToWrite;
+        DWORD playCursor, writeCursor, targetCursor;
+        // TODO: Tighten up sound logic so we know where should be writing to
+        // and can predict the time spent in the game update
+        if (globalSecondaryBuffer && SUCCEEDED(globalSecondaryBuffer.GetCurrentPosition(&playCursor, &writeCursor)))
+        {
+            byteToLock = (soundOutput.currentSampleIndex * soundOutput.bytesPerSample)
+                       % soundOutput.secondaryBufferSize;
+
+            targetCursor = (playCursor + (soundOutput.latencyInSamples * soundOutput.bytesPerSample))
+                         % soundOutput.secondaryBufferSize;
+
+            if (byteToLock > targetCursor)
+            {
+                bytesToWrite = (soundOutput.secondaryBufferSize - byteToLock) + targetCursor;
+            }
+            else
+            {
+                bytesToWrite = targetCursor - byteToLock;
+            }
+
+            soundIsValid = true;
+        }
+
+        GameSoundOutputBuffer gameSoundBuffer = {
+            samples:     gameSoundSamples,
+            sampleRate:  soundOutput.sampleRate,
+            sampleCount: bytesToWrite / soundOutput.bytesPerSample
+        };
+        // TODO: Allow sample offsets here for more robust platform options
+        gameOutputSound(gameSoundBuffer, soundOutput.toneHz);
 
         GameOffscreenBuffer gameOffscreenBuffer = {
             memory: globalBackBuffer.memory,
@@ -654,24 +732,9 @@ main() nothrow @nogc
 
         gameUpdateAndRender(gameOffscreenBuffer, xOffset++, yOffset);
 
-        DWORD playCursor;
-        DWORD writeCursor;
-        if (globalSecondaryBuffer && SUCCEEDED(globalSecondaryBuffer.GetCurrentPosition(&playCursor, &writeCursor)))
+        if (soundIsValid)
         {
-            DWORD byteToLock = (soundOutput.currentSampleIndex * soundOutput.bytesPerSample)
-                             % soundOutput.secondaryBufferSize;
-            DWORD bytesToWrite;
-
-            if (byteToLock > playCursor)
-            {
-                bytesToWrite = (soundOutput.secondaryBufferSize - byteToLock) + playCursor;
-            }
-            else
-            {
-                bytesToWrite = playCursor - byteToLock;
-            }
-
-            win32FillSoundBuffer(soundOutput, byteToLock, bytesToWrite);
+            win32FillSoundBuffer(soundOutput, gameSoundBuffer, byteToLock, bytesToWrite);
         }
 
         auto dimensions = win32GetWindowDimensions(window);

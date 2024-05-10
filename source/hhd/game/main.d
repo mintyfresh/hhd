@@ -1,12 +1,27 @@
 module hhd.game.main;
 
-struct GameOffscreenBuffer
-{
-    void* memory; // NOTE: Pixels are always 32-bits wide, Memory Order BB GG RR XX
+import hhd.math;
+import hhd.platform.common;
 
-    int width;
-    int height;
-    int pitch;
+extern (System) void
+gameOutputSound(in ref GameSoundOutputBuffer soundBuffer, int toneHz) nothrow @nogc
+{
+    enum TONE_VOLUME = 1000.0f;
+
+    static float tSine = 0.0f;
+
+    float tonePeriod = soundBuffer.sampleRate / toneHz;
+    short* sampleOutput = cast(short*) soundBuffer.samples;
+
+    foreach (sampleIndex; 0..soundBuffer.sampleCount)
+    {
+        short sampleValue = cast(short)(sinf(tSine) * TONE_VOLUME);
+
+        *sampleOutput++ = sampleValue;
+        *sampleOutput++ = sampleValue;
+
+        tSine += (2.0f * PI) / tonePeriod;
+    }
 }
 
 pragma(inline, true)
@@ -37,7 +52,7 @@ renderFunkyGradient(in ref GameOffscreenBuffer buffer, int xOffset, int yOffset)
     }
 }
 
-void
+extern (System) void
 gameUpdateAndRender(in ref GameOffscreenBuffer buffer, int xOffset, int yOffset) nothrow @nogc
 {
     renderFunkyGradient(buffer, xOffset, yOffset);

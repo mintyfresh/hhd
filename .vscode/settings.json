@@ -1,5 +1,8 @@
 {
     "[d]": {
         "editor.tabSize": 4
-    }
+    },
+    "dscanner.ignoredKeys": [
+        "dscanner.style.phobos_naming_convention"
+    ]
 }
