@@ -5,6 +5,7 @@ import core.sys.windows.windows;
 import hhd.math;
 import hhd.platform.common;
 import hhd.platform.win32.direct_sound;
+import hhd.platform.win32.types;
 import hhd.platform.win32.xinput;
 
 debug
@@ -78,23 +79,6 @@ win32LoadXInput() nothrow @nogc
             writefln("XInputSetState: %#x", XInputSetState);
         }
     }
-}
-
-struct Win32SoundOutput
-{
-    int sampleRate;
-    int bytesPerSample;
-    int secondaryBufferSize;
-
-    int toneHz;
-    short toneVolume;
-    int tonePeriod;
-
-    int latencyInSamples;
-    uint currentSampleIndex;
-
-    @property
-    enum ushort channelsCount = 2; 
 }
 
 private void
@@ -264,49 +248,6 @@ win32InitDirectSound(HWND window, DWORD sampleRate, DWORD bufferSize) nothrow @n
         // TODO: How should be handle this?
         debug writeln("Failed to load DirectSound library");
     }
-}
-
-struct Win32OffscreenBuffer
-{
-    BITMAPINFO info;
-    void* memory;
-
-    @property
-    enum LONG BYTES_PER_PIXEL = 4;
-
-    @property
-    pragma(inline, true)
-    LONG width() const nothrow @nogc
-    {
-        return info.bmiHeader.biWidth;
-    }
-
-    @property
-    pragma(inline, true)
-    LONG height() const nothrow @nogc
-    {
-        return -info.bmiHeader.biHeight;
-    }
-
-    @property
-    pragma(inline, true)
-    LONG pitch() const nothrow @nogc
-    {
-        return width * BYTES_PER_PIXEL;
-    }
-
-    @property
-    pragma(inline, true)
-    size_t memorySize() const nothrow @nogc
-    {
-        return width * height * BYTES_PER_PIXEL;
-    }
-}
-
-struct Win32WindowDimensions
-{
-    LONG width;
-    LONG height;
 }
 
 private Win32WindowDimensions
@@ -521,6 +462,18 @@ win32WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) nothrow
     return result;
 }
 
+private void
+win32ProcessXInputButton(
+    ref GameButtonInput newState,
+    in ref GameButtonInput oldState,
+    in ref XINPUT_GAMEPAD gamepad,
+    WORD button
+) nothrow @nogc
+{
+    newState.isDown = gamepad.isPressed(button);
+    newState.transitionsCount = oldState.isDown != newState.isDown ? 1 : 0;
+}
+
 extern (Windows) int
 main() nothrow @nogc
 {
@@ -599,17 +552,11 @@ main() nothrow @nogc
     // we can get the device context once and use it for the lifetime of the window
     HDC deviceContext = GetDC(window);
 
-    int xOffset = 0;
-    int yOffset = 0;
-
     Win32SoundOutput soundOutput;
 
     soundOutput.sampleRate = 48_000;
     soundOutput.bytesPerSample = 4;
     soundOutput.secondaryBufferSize = soundOutput.sampleRate * soundOutput.bytesPerSample;
-    soundOutput.toneHz = 530;
-    soundOutput.toneVolume = 500;
-    soundOutput.tonePeriod = soundOutput.sampleRate / soundOutput.toneHz;
     soundOutput.latencyInSamples = soundOutput.sampleRate / 15;
 
     win32InitDirectSound(window, soundOutput.sampleRate, soundOutput.secondaryBufferSize);
@@ -638,6 +585,10 @@ main() nothrow @nogc
     long lastFrameCounter = win32GetPerformanceCounter();
     ulong lastCycleCounter = win32GetCycleCounter();
 
+    GameInput[2] gameInput;
+    uint currInputIndex = 0;
+    uint lastInputIndex = 1;
+
     while (globalIsRunning)
     {
         MSG message;
@@ -652,41 +603,100 @@ main() nothrow @nogc
             DispatchMessage(&message);
         }
 
+        static assert(
+            XUSER_MAX_COUNT <= GAME_INPUT_CONTROLLERS_COUNT,
+            "XUSER_MAX_COUNT must be less than or equal to GAME_INPUT_CONTROLLERS_COUNT"
+        );
+
         // TODO: Should this be polled more frequently?
         foreach (userIndex; 0..XUSER_MAX_COUNT)
         {
+            GameControllerInput* newController = &gameInput[currInputIndex].controllers[userIndex];
+            GameControllerInput* oldController = &gameInput[lastInputIndex].controllers[userIndex];
+
             XINPUT_STATE state;
             if (XInputGetState(userIndex, &state) == ERROR_SUCCESS)
             {
-                // NOTE: Controller connected
-                bool dpadUp = state.gamepad.isPressed(XINPUT_GAMEPAD_DPAD_UP);
-                bool dpadDown = state.gamepad.isPressed(XINPUT_GAMEPAD_DPAD_DOWN);
-                bool dpadLeft = state.gamepad.isPressed(XINPUT_GAMEPAD_DPAD_LEFT);
-                bool dpadRight = state.gamepad.isPressed(XINPUT_GAMEPAD_DPAD_RIGHT);
+                newController.isConnected = true;
 
-                bool start = state.gamepad.isPressed(XINPUT_GAMEPAD_START);
-                bool back = state.gamepad.isPressed(XINPUT_GAMEPAD_BACK);
+                win32ProcessXInputButton(
+                    newController.aButton, oldController.aButton,
+                    state.gamepad, XINPUT_GAMEPAD_A
+                );
+                win32ProcessXInputButton(
+                    newController.bButton, oldController.bButton,
+                    state.gamepad, XINPUT_GAMEPAD_B
+                );
+                win32ProcessXInputButton(
+                    newController.xButton, oldController.xButton,
+                    state.gamepad, XINPUT_GAMEPAD_X
+                );
+                win32ProcessXInputButton(
+                    newController.yButton, oldController.yButton,
+                    state.gamepad, XINPUT_GAMEPAD_Y
+                );
 
-                bool leftShoulder = state.gamepad.isPressed(XINPUT_GAMEPAD_LEFT_SHOULDER);
-                bool rightShoulder = state.gamepad.isPressed(XINPUT_GAMEPAD_RIGHT_SHOULDER);
+                win32ProcessXInputButton(
+                    newController.dpadUpButton, oldController.dpadUpButton,
+                    state.gamepad, XINPUT_GAMEPAD_DPAD_UP
+                );
+                win32ProcessXInputButton(
+                    newController.dpadDownButton, oldController.dpadDownButton,
+                    state.gamepad, XINPUT_GAMEPAD_DPAD_DOWN
+                );
+                win32ProcessXInputButton(
+                    newController.dpadLeftButton, oldController.dpadLeftButton,
+                    state.gamepad, XINPUT_GAMEPAD_DPAD_LEFT
+                );
+                win32ProcessXInputButton(
+                    newController.dpadRightButton, oldController.dpadRightButton,
+                    state.gamepad, XINPUT_GAMEPAD_DPAD_RIGHT
+                );
 
-                bool aButton = state.gamepad.isPressed(XINPUT_GAMEPAD_A);
-                bool bButton = state.gamepad.isPressed(XINPUT_GAMEPAD_B);
-                bool xButton = state.gamepad.isPressed(XINPUT_GAMEPAD_X);
-                bool yButton = state.gamepad.isPressed(XINPUT_GAMEPAD_Y);
+                win32ProcessXInputButton(
+                    newController.startButton, oldController.startButton,
+                    state.gamepad, XINPUT_GAMEPAD_START
+                );
+                win32ProcessXInputButton(
+                    newController.backButton, oldController.backButton,
+                    state.gamepad, XINPUT_GAMEPAD_BACK
+                );
 
-                short stickX = state.gamepad.sThumbLX;
-                short stickY = state.gamepad.sThumbLY;
+                win32ProcessXInputButton(
+                    newController.leftShoulderButton, oldController.leftShoulderButton,
+                    state.gamepad, XINPUT_GAMEPAD_LEFT_SHOULDER
+                );
+                win32ProcessXInputButton(
+                    newController.rightShoulderButton, oldController.rightShoulderButton,
+                    state.gamepad, XINPUT_GAMEPAD_RIGHT_SHOULDER
+                );
 
+                newController.leftStick.isAnalog = true;
+                newController.leftStick.startX = oldController.leftStick.endX;
+                newController.leftStick.startY = oldController.leftStick.endY;
+                newController.leftStick.endX = state.gamepad.leftThumbX;
+                newController.leftStick.endY = state.gamepad.leftThumbY;
+
+                newController.rightStick.isAnalog = true;
+                newController.rightStick.startX = oldController.rightStick.endX;
+                newController.rightStick.startY = oldController.rightStick.endY;
+                newController.rightStick.endX = state.gamepad.rightThumbX;
+                newController.rightStick.endY = state.gamepad.rightThumbY;
                 // TODO: Handle deadzones on thumbsticks
-
-                soundOutput.toneHz = 512 + cast(int)(256.0f * (cast(float)(stickY) / 30_000.0f));
-                soundOutput.tonePeriod = soundOutput.sampleRate / soundOutput.toneHz;
             }
             else
             {
                 // NOTE: Controller not connected
                 // TODO: Display or handle controllers going away?
+                newController.isConnected = false;
+            }
+
+            debug
+            {
+                if (newController.isConnected && !oldController.isConnected)
+                {
+                    writefln("Controller %d connected.", userIndex);
+                }
             }
         }
 
@@ -721,7 +731,7 @@ main() nothrow @nogc
             sampleCount: bytesToWrite / soundOutput.bytesPerSample
         };
         // TODO: Allow sample offsets here for more robust platform options
-        gameOutputSound(gameSoundBuffer, soundOutput.toneHz);
+        gameOutputSound(gameSoundBuffer);
 
         GameOffscreenBuffer gameOffscreenBuffer = {
             memory: globalBackBuffer.memory,
@@ -730,7 +740,7 @@ main() nothrow @nogc
             pitch:  globalBackBuffer.pitch
         };
 
-        gameUpdateAndRender(gameOffscreenBuffer, xOffset++, yOffset);
+        gameUpdateAndRender(gameInput[currInputIndex], gameOffscreenBuffer);
 
         if (soundIsValid)
         {
@@ -760,6 +770,10 @@ main() nothrow @nogc
 
         lastFrameCounter = thisFrameCounter;
         lastCycleCounter = thisCycleCounter;
+
+        // Swap input indices
+        currInputIndex = 1 - currInputIndex;
+        lastInputIndex = 1 - lastInputIndex;
     }
 
     return 0;

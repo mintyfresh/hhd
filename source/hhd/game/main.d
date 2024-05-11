@@ -3,14 +3,19 @@ module hhd.game.main;
 import hhd.math;
 import hhd.platform.common;
 
+static int toneHz = 256;
+
 extern (System) void
-gameOutputSound(in ref GameSoundOutputBuffer soundBuffer, int toneHz) nothrow @nogc
+gameOutputSound(in ref GameSoundOutputBuffer soundBuffer) nothrow @nogc
 {
     enum TONE_VOLUME = 1000.0f;
 
     static float tSine = 0.0f;
 
-    float tonePeriod = soundBuffer.sampleRate / toneHz;
+    // TODO: What do we do if toneHz is zero?
+    float tonePeriod = toneHz != 0
+        ? soundBuffer.sampleRate / toneHz
+        : 0.0f;
     short* sampleOutput = cast(short*) soundBuffer.samples;
 
     foreach (sampleIndex; 0..soundBuffer.sampleCount)
@@ -20,7 +25,9 @@ gameOutputSound(in ref GameSoundOutputBuffer soundBuffer, int toneHz) nothrow @n
         *sampleOutput++ = sampleValue;
         *sampleOutput++ = sampleValue;
 
-        tSine += (2.0f * PI) / tonePeriod;
+        tSine += tonePeriod != 0.0f
+            ? (2.0f * PI) / tonePeriod
+            : 0.0f;
     }
 }
 
@@ -53,7 +60,31 @@ renderFunkyGradient(in ref GameOffscreenBuffer buffer, int xOffset, int yOffset)
 }
 
 extern (System) void
-gameUpdateAndRender(in ref GameOffscreenBuffer buffer, int xOffset, int yOffset) nothrow @nogc
+gameUpdateAndRender(in ref GameInput input, in ref GameOffscreenBuffer buffer) nothrow @nogc
 {
+    static int xOffset = 0, yOffset = 0;
+
+    GameControllerInput controllerInput = input.controllers[0];
+
+    if (controllerInput.leftStick.isAnalog)
+    {
+        // TODO: Analog input handling
+        toneHz = cast(int)(256.0f + 256.0f * controllerInput.leftStick.endX);
+        yOffset += cast(int)(10.0f * controllerInput.leftStick.endY);
+    }
+    else
+    {
+        // TODO: Digital input handling
+    }
+
+    if (controllerInput.xButton.isDown)
+    {
+        xOffset += 10;
+    }
+    if (controllerInput.bButton.isDown)
+    {
+        xOffset -= 10;
+    }
+
     renderFunkyGradient(buffer, xOffset, yOffset);
 }

@@ -22,6 +22,12 @@ enum : WORD
 
 struct XINPUT_GAMEPAD
 {
+    enum float MAX_THUMB = +32_767.0f;
+    enum float MIN_THUMB = -32_768.0f;
+
+    enum SHORT LEFT_THUMB_DEADZONE = 7849;
+    enum SHORT RIGHT_THUMB_DEADZONE = 8689;
+
     WORD wButtons;
     BYTE bLeftTrigger;
     BYTE bRightTrigger;
@@ -29,11 +35,6 @@ struct XINPUT_GAMEPAD
     SHORT sThumbLY;
     SHORT sThumbRX;
     SHORT sThumbRY;
-
-    bool isPressed(WORD button) const nothrow @nogc
-    {
-        return (wButtons & button) == button;
-    }
 }
 
 struct XINPUT_STATE
@@ -61,3 +62,80 @@ __gshared
 }
 
 enum DWORD XUSER_MAX_COUNT = 4;
+
+bool isPressed(in ref XINPUT_GAMEPAD gamepad, WORD button) nothrow @nogc
+{
+    return (gamepad.wButtons & button) == button;
+}
+
+pragma(inline, true)
+@property
+float leftThumbX(in ref XINPUT_GAMEPAD gamepad) nothrow @nogc
+{
+    if (gamepad.sThumbLX < 0)
+    {
+        return gamepad.sThumbLX / -XINPUT_GAMEPAD.MIN_THUMB;
+    }
+    else if (gamepad.sThumbLX > 0)
+    {
+        return gamepad.sThumbLX / +XINPUT_GAMEPAD.MAX_THUMB;
+    }
+    else
+    {
+        return 0.0f;
+    }
+}
+
+pragma(inline, true)
+@property
+float leftThumbY(in ref XINPUT_GAMEPAD gamepad) nothrow @nogc
+{
+    if (gamepad.sThumbLY < 0)
+    {
+        return gamepad.sThumbLY / -XINPUT_GAMEPAD.MIN_THUMB;
+    }
+    else if (gamepad.sThumbLY > 0)
+    {
+        return gamepad.sThumbLY / +XINPUT_GAMEPAD.MAX_THUMB;
+    }
+    else
+    {
+        return 0.0f;
+    }
+}
+
+pragma(inline, true)
+@property
+float rightThumbX(in ref XINPUT_GAMEPAD gamepad) nothrow @nogc
+{
+    if (gamepad.sThumbRX < 0)
+    {
+        return gamepad.sThumbRX / -XINPUT_GAMEPAD.MIN_THUMB;
+    }
+    else if (gamepad.sThumbRX > 0)
+    {
+        return gamepad.sThumbRX / +XINPUT_GAMEPAD.MAX_THUMB;
+    }
+    else
+    {
+        return 0.0f;
+    }
+}
+
+pragma(inline, true)
+@property
+float rightThumbY(in ref XINPUT_GAMEPAD gamepad) nothrow @nogc
+{
+    if (gamepad.sThumbRY < 0)
+    {
+        return gamepad.sThumbRY / -XINPUT_GAMEPAD.MIN_THUMB;
+    }
+    else if (gamepad.sThumbRY > 0)
+    {
+        return gamepad.sThumbRY / +XINPUT_GAMEPAD.MAX_THUMB;
+    }
+    else
+    {
+        return 0.0f;
+    }
+}
