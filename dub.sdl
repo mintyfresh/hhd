@@ -5,3 +5,8 @@ targetType "executable"
 copyright "Copyright © 2024, Minty Fresh"
 license "BSL-1.0"
 libs "user32" "gdi32" platform="windows"
+
+buildType "release" {
+  buildOptions "releaseMode" "optimize" "inline"
+  dflags "-betterC"
+}

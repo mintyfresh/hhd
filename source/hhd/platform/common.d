@@ -111,5 +111,33 @@ struct GameInput
     GameControllerInput[GAME_INPUT_CONTROLLERS_COUNT] controllers;
 }
 
-extern (System) void gameOutputSound(in ref GameSoundOutputBuffer soundBuffer) nothrow @nogc;
-extern (System) void gameUpdateAndRender(in ref GameInput input, in ref GameOffscreenBuffer buffer) nothrow @nogc;
+struct GameMemory
+{
+    bool isInitialized;
+
+    // NOTE: All memory must be zeroed at startup
+    size_t permanentStorageSize;
+    void* permanentStorage;
+
+    // NOTE: All memory must be zeroed at startup
+    size_t transientStorageSize;
+    void* transientStorage;
+
+    @property
+    T* permanent(T)(size_t offset = 0) nothrow @nogc
+    in
+    {
+        assert(permanentStorage !is null, "Permanent storage is not initialized");
+        assert(offset + T.sizeof <= permanentStorageSize, "Permanent storage is not large enough");
+    }
+    do
+    {
+        return cast(T*)(permanentStorage + offset);
+    }
+}
+
+extern (System) nothrow @nogc
+{
+    void gameOutputSound(scope ref GameMemory memory, scope ref GameSoundOutputBuffer soundBuffer);
+    void gameUpdateAndRender(scope ref GameMemory memory, in ref GameInput input, in ref GameOffscreenBuffer buffer);
+}

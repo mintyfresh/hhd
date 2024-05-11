@@ -7,6 +7,7 @@ import hhd.platform.common;
 import hhd.platform.win32.direct_sound;
 import hhd.platform.win32.types;
 import hhd.platform.win32.xinput;
+import hhd.util;
 
 debug
 {
@@ -589,6 +590,59 @@ main() nothrow @nogc
     uint currInputIndex = 0;
     uint lastInputIndex = 1;
 
+    GameMemory gameMemory;
+
+    debug
+    {
+        version (Win64)
+        {
+            // NOTE: In debug mode, we ask for well-known addresses to simplify debugging
+            // (All temporary and permanent memory objects should be placed at the same addresses every time)
+            enum LPVOID PERMANENT_STORAGE_ADDRESS = cast(LPVOID) 1.terabytes;
+            enum LPVOID TRANSIENT_STORAGE_ADDRESS = cast(LPVOID) 2.terabytes;
+        }
+        else
+        {
+            // TODO: Figure out where to put these on 32-bit platforms
+            enum LPVOID PERMANENT_STORAGE_ADDRESS = cast(LPVOID) 0;
+            enum LPVOID TRANSIENT_STORAGE_ADDRESS = cast(LPVOID) 0;
+        }
+    }
+    else
+    {
+        // NOTE: In release mode, use whatever address is available
+        enum LPVOID PERMANENT_STORAGE_ADDRESS = cast(LPVOID) 0;
+        enum LPVOID TRANSIENT_STORAGE_ADDRESS = cast(LPVOID) 0;
+    }
+
+    gameMemory.permanentStorageSize = 64.megabytes;
+    gameMemory.permanentStorage = VirtualAlloc(
+        PERMANENT_STORAGE_ADDRESS,
+        gameMemory.permanentStorageSize,
+        MEM_RESERVE | MEM_COMMIT,
+        PAGE_READWRITE
+    );
+
+    debug
+    {
+        assert(gameMemory.permanentStorage, "Failed to allocate permanent storage");
+        writefln("Allocated permanent storage: %#x", gameMemory.permanentStorage);
+    }
+
+    gameMemory.transientStorageSize = 2.gigabytes;
+    gameMemory.transientStorage = VirtualAlloc(
+        TRANSIENT_STORAGE_ADDRESS,
+        gameMemory.transientStorageSize,
+        MEM_RESERVE | MEM_COMMIT,
+        PAGE_READWRITE
+    );
+
+    debug
+    {
+        assert(gameMemory.transientStorage, "Failed to allocate transient storage");
+        writefln("Allocated transient storage: %#x", gameMemory.transientStorage);
+    }
+
     while (globalIsRunning)
     {
         MSG message;
@@ -725,22 +779,21 @@ main() nothrow @nogc
             soundIsValid = true;
         }
 
-        GameSoundOutputBuffer gameSoundBuffer = {
-            samples:     gameSoundSamples,
-            sampleRate:  soundOutput.sampleRate,
-            sampleCount: bytesToWrite / soundOutput.bytesPerSample
-        };
-        // TODO: Allow sample offsets here for more robust platform options
-        gameOutputSound(gameSoundBuffer);
-
         GameOffscreenBuffer gameOffscreenBuffer = {
             memory: globalBackBuffer.memory,
             width:  globalBackBuffer.width,
             height: globalBackBuffer.height,
             pitch:  globalBackBuffer.pitch
         };
+        gameUpdateAndRender(gameMemory, gameInput[currInputIndex], gameOffscreenBuffer);
 
-        gameUpdateAndRender(gameInput[currInputIndex], gameOffscreenBuffer);
+        GameSoundOutputBuffer gameSoundBuffer = {
+            samples:     gameSoundSamples,
+            sampleRate:  soundOutput.sampleRate,
+            sampleCount: bytesToWrite / soundOutput.bytesPerSample
+        };
+        // TODO: Allow sample offsets here for more robust platform options
+        gameOutputSound(gameMemory, gameSoundBuffer);
 
         if (soundIsValid)
         {
@@ -777,4 +830,23 @@ main() nothrow @nogc
     }
 
     return 0;
+}
+
+version (D_BetterC)
+{
+    extern (C) int _d_run_main(int, char**)
+    {
+        return main();
+    }
+}
+else
+{
+    // Debug mode configuration
+    shared static this()
+    {
+        // Disable GC and collection during debug mode
+        // All memory should be manually managed
+        import core.memory : GC;
+        GC.disable();
+    }
 }

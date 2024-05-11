@@ -3,27 +3,30 @@ module hhd.game.main;
 import hhd.math;
 import hhd.platform.common;
 
-static int toneHz = 256;
-
 extern (System) void
-gameOutputSound(in ref GameSoundOutputBuffer soundBuffer) nothrow @nogc
+gameOutputSound(
+    scope ref GameMemory memory,
+    scope ref GameSoundOutputBuffer soundBuffer
+) nothrow @nogc
 {
-    enum TONE_VOLUME = 1000.0f;
+    enum TONE_VOLUME = 2500.0f;
 
     static float tSine = 0.0f;
 
-    // TODO: What do we do if toneHz is zero?
-    float tonePeriod = toneHz != 0
-        ? soundBuffer.sampleRate / toneHz
-        : 0.0f;
-    short* sampleOutput = cast(short*) soundBuffer.samples;
+    GameState* gameState = memory.permanent!(GameState);
 
-    foreach (sampleIndex; 0..soundBuffer.sampleCount)
+    // TODO: What do we do if toneHz is zero?
+    float tonePeriod = gameState.toneHz != 0
+        ? soundBuffer.sampleRate / gameState.toneHz
+        : 0.0f;
+
+    size_t sampleIndex = 0;
+    foreach (_; 0..soundBuffer.sampleCount)
     {
         short sampleValue = cast(short)(sinf(tSine) * TONE_VOLUME);
 
-        *sampleOutput++ = sampleValue;
-        *sampleOutput++ = sampleValue;
+        soundBuffer.samples[sampleIndex++] = sampleValue;
+        soundBuffer.samples[sampleIndex++] = sampleValue;
 
         tSine += tonePeriod != 0.0f
             ? (2.0f * PI) / tonePeriod
@@ -59,18 +62,40 @@ renderFunkyGradient(in ref GameOffscreenBuffer buffer, int xOffset, int yOffset)
     }
 }
 
-extern (System) void
-gameUpdateAndRender(in ref GameInput input, in ref GameOffscreenBuffer buffer) nothrow @nogc
+struct GameState
 {
-    static int xOffset = 0, yOffset = 0;
+    int toneHz;
+    int xOffset;
+    int yOffset;
+}
 
+extern (System) void
+gameUpdateAndRender(
+    scope ref GameMemory memory,
+    in ref GameInput input,
+    in ref GameOffscreenBuffer buffer
+) nothrow @nogc
+{
+    GameState* gameState = memory.permanent!(GameState);
+
+    // TODO: Should this be a separate initialize hook?
+    if (!memory.isInitialized)
+    {
+        gameState.toneHz  = 256;
+        gameState.xOffset = 0;
+        gameState.yOffset = 0;
+
+        memory.isInitialized = true;
+    }
+
+    // TODO: Handle the rest of the controllers
     GameControllerInput controllerInput = input.controllers[0];
 
     if (controllerInput.leftStick.isAnalog)
     {
         // TODO: Analog input handling
-        toneHz = cast(int)(256.0f + 256.0f * controllerInput.leftStick.endX);
-        yOffset += cast(int)(10.0f * controllerInput.leftStick.endY);
+        gameState.toneHz = cast(int)(256.0f + 256.0f * controllerInput.leftStick.endX);
+        gameState.yOffset += cast(int)(10.0f * controllerInput.leftStick.endY);
     }
     else
     {
@@ -79,12 +104,12 @@ gameUpdateAndRender(in ref GameInput input, in ref GameOffscreenBuffer buffer) n
 
     if (controllerInput.xButton.isDown)
     {
-        xOffset += 10;
+        gameState.xOffset += 10;
     }
     if (controllerInput.bButton.isDown)
     {
-        xOffset -= 10;
+        gameState.xOffset -= 10;
     }
 
-    renderFunkyGradient(buffer, xOffset, yOffset);
+    renderFunkyGradient(buffer, gameState.xOffset, gameState.yOffset);
 }
