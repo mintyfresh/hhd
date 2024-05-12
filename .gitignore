@@ -14,3 +14,7 @@ hhd-test-*
 *.o
 *.obj
 *.lst
+
+# Test artifacts
+/tmp/*
+!/tmp/.gitkeep

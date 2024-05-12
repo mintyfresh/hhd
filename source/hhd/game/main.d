@@ -86,6 +86,12 @@ gameUpdateAndRender(
         gameState.yOffset = 0;
 
         memory.isInitialized = true;
+
+        void[] data = debugReadEntireFile(__FILE__);
+        assert(data.length > 0, "Failed to read file.");
+
+        debugWriteEntireFile("tmp/debug.tmp", data);
+        debugFreeFileMemory(data);
     }
 
     // TODO: Handle the rest of the controllers
