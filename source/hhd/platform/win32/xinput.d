@@ -28,6 +28,8 @@ struct XINPUT_GAMEPAD
     enum SHORT LEFT_THUMB_DEADZONE = 7849;
     enum SHORT RIGHT_THUMB_DEADZONE = 8689;
 
+    enum BYTE TRIGGER_THRESHOLD = 30;
+
     WORD wButtons;
     BYTE bLeftTrigger;
     BYTE bRightTrigger;
@@ -72,67 +74,44 @@ pragma(inline, true)
 @property
 float leftThumbX(in ref XINPUT_GAMEPAD gamepad) nothrow @nogc
 {
-    if (gamepad.sThumbLX < 0)
-    {
-        return gamepad.sThumbLX / -XINPUT_GAMEPAD.MIN_THUMB;
-    }
-    else if (gamepad.sThumbLX > 0)
-    {
-        return gamepad.sThumbLX / +XINPUT_GAMEPAD.MAX_THUMB;
-    }
-    else
-    {
-        return 0.0f;
-    }
+    return calculateThumbValue!(XINPUT_GAMEPAD.LEFT_THUMB_DEADZONE)(gamepad.sThumbLX);
 }
 
 pragma(inline, true)
 @property
 float leftThumbY(in ref XINPUT_GAMEPAD gamepad) nothrow @nogc
 {
-    if (gamepad.sThumbLY < 0)
-    {
-        return gamepad.sThumbLY / -XINPUT_GAMEPAD.MIN_THUMB;
-    }
-    else if (gamepad.sThumbLY > 0)
-    {
-        return gamepad.sThumbLY / +XINPUT_GAMEPAD.MAX_THUMB;
-    }
-    else
-    {
-        return 0.0f;
-    }
+    return calculateThumbValue!(XINPUT_GAMEPAD.LEFT_THUMB_DEADZONE)(gamepad.sThumbLY);
 }
 
 pragma(inline, true)
 @property
 float rightThumbX(in ref XINPUT_GAMEPAD gamepad) nothrow @nogc
 {
-    if (gamepad.sThumbRX < 0)
-    {
-        return gamepad.sThumbRX / -XINPUT_GAMEPAD.MIN_THUMB;
-    }
-    else if (gamepad.sThumbRX > 0)
-    {
-        return gamepad.sThumbRX / +XINPUT_GAMEPAD.MAX_THUMB;
-    }
-    else
-    {
-        return 0.0f;
-    }
+    return calculateThumbValue!(XINPUT_GAMEPAD.RIGHT_THUMB_DEADZONE)(gamepad.sThumbRX);
 }
 
 pragma(inline, true)
 @property
 float rightThumbY(in ref XINPUT_GAMEPAD gamepad) nothrow @nogc
 {
-    if (gamepad.sThumbRY < 0)
+    return calculateThumbValue!(XINPUT_GAMEPAD.RIGHT_THUMB_DEADZONE)(gamepad.sThumbRY);
+}
+
+pragma(inline, true)
+private float calculateThumbValue(SHORT deadzone)(SHORT thumbValue) nothrow @nogc
+{
+    static assert(deadzone >= 0, "Deadzone must be non-negative.");
+
+    if (thumbValue < -(deadzone + 1))
     {
-        return gamepad.sThumbRY / -XINPUT_GAMEPAD.MIN_THUMB;
+        // NOTE: thumbValue and MIN_THUMB are both negative here
+        // Flip the sign of MIN_THUMB to so our quotient is negative
+        return (thumbValue + deadzone) / (-XINPUT_GAMEPAD.MIN_THUMB - deadzone);
     }
-    else if (gamepad.sThumbRY > 0)
+    else if (thumbValue > deadzone)
     {
-        return gamepad.sThumbRY / +XINPUT_GAMEPAD.MAX_THUMB;
+        return (thumbValue - deadzone) / (+XINPUT_GAMEPAD.MAX_THUMB - deadzone);
     }
     else
     {

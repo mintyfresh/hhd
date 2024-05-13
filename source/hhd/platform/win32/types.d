@@ -57,3 +57,13 @@ struct Win32WindowDimensions
     LONG width;
     LONG height;
 }
+
+struct Win32ControllerButtonMapping
+{
+    import hhd.platform.common : GameButton;
+
+    GameButton gameButton;
+    DWORD xInputButton;
+
+    @disable this();
+}

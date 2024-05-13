@@ -499,47 +499,7 @@ win32WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) nothrow
         case WM_SYSKEYUP:
         case WM_SYSKEYDOWN:
         {
-            // TODO: Handle keyboard input
-            uint vkCode = cast(uint) wParam;
-
-            /// Was this key down before this event?
-            bool prevDown = (lParam & (1 << 30)) != 0;
-            /// Is this key currently down?
-            bool currDown = (lParam & (1 << 31)) == 0;
-
-            /// Was the ALT modifier key pressed?
-            bool altKey = (lParam & (1 << 29)) != 0;
-
-            if (currDown != prevDown)
-            {
-                switch (vkCode)
-                {
-                    case VK_ESCAPE:
-                    {
-                        // TODO: Prompt the user to confirm
-                        globalIsRunning = false;
-                    }
-                    break;
-
-                    case VK_F4:
-                    {
-                        // NOTE: User explicitly closed the window
-                        // We probably don't need to prompt the user?
-                        if (altKey)
-                        {
-                            globalIsRunning = false;
-                        }
-                    }
-                    break;
-
-                    default:
-                    {
-                        // TODO: Add handling for remaining keys
-                        debug writefln("Unhandled key: %c (%#x)", cast(char) vkCode, vkCode);
-                    }
-                    break;
-                }
-            }
+            assert(false, "Keyboard input should be handled in win32ProcessWindowMessages");
         }
         break;
 
@@ -569,6 +529,132 @@ win32WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) nothrow
 }
 
 private void
+win32ProcessKeyboardMessage(scope ref GameKeyInput input, bool isDown) nothrow @nogc
+in
+{
+    assert(input.isDown != isDown, "Key state should change");
+}
+do
+{
+    input.isDown = isDown;
+    input.transitionsCount++;
+}
+
+private void
+win32ProcessWindowMessages(HWND window, scope ref GameKeyboardInput input) nothrow @nogc
+{
+    MSG message;
+    while (PeekMessage(&message, null, 0, 0, PM_REMOVE))
+    {
+        switch (message.message)
+        {
+            case WM_QUIT:
+            {
+                globalIsRunning = false;
+            }
+            break;
+
+            case WM_KEYUP:
+            case WM_KEYDOWN:
+            case WM_SYSKEYUP:
+            case WM_SYSKEYDOWN:
+            {
+                // TODO: Handle keyboard input
+                uint vkCode = cast(uint) message.wParam;
+
+                /// Was this key down before this event?
+                bool prevDown = (message.lParam & (1 << 30)) != 0;
+                /// Is this key currently down?
+                bool currDown = (message.lParam & (1 << 31)) == 0;
+
+                /// Was the ALT modifier key pressed?
+                bool altKey = (message.lParam & (1 << 29)) != 0;
+
+                if (currDown != prevDown)
+                {
+                    switch (vkCode)
+                    {
+                        case VK_ESCAPE:
+                        {
+                            // TODO: Process this as game input
+                            globalIsRunning = false;
+                        }
+                        break;
+
+                        case 'W':
+                        {
+                            win32ProcessKeyboardMessage(input.keys[GameKey.w], currDown);
+                        }
+                        break;
+
+                        case 'A':
+                        {
+                            win32ProcessKeyboardMessage(input.keys[GameKey.a], currDown);
+                        }
+                        break;
+
+                        case 'S':
+                        {
+                            win32ProcessKeyboardMessage(input.keys[GameKey.s], currDown);
+                        }
+                        break;
+
+                        case 'D':
+                        {
+                            win32ProcessKeyboardMessage(input.keys[GameKey.d], currDown);
+                        }
+                        break;
+
+                        case 'Q':
+                        {
+                            win32ProcessKeyboardMessage(input.keys[GameKey.q], currDown);
+                        }
+                        break;
+
+                        case 'E':
+                        {
+                            win32ProcessKeyboardMessage(input.keys[GameKey.e], currDown);
+                        }
+                        break;
+
+                        case VK_SPACE:
+                        {
+                            win32ProcessKeyboardMessage(input.keys[GameKey.space], currDown);
+                        }
+                        break;
+
+                        case VK_F4:
+                        {
+                            // NOTE: User explicitly closed the window
+                            // We probably don't need to prompt the user?
+                            if (altKey)
+                            {
+                                globalIsRunning = false;
+                            }
+                        }
+                        break;
+
+                        default:
+                        {
+                            // TODO: Add handling for remaining keys
+                            debug writefln("Unhandled key: %c (%#x)", cast(char) vkCode, vkCode);
+                        }
+                        break;
+                    }
+                }
+            }
+            break;
+
+            default:
+            {
+                TranslateMessage(&message);
+                DispatchMessage(&message);
+            }
+        }
+    }
+}
+
+private void
 win32ProcessXInputButton(
     ref GameButtonInput newState,
     in ref GameButtonInput oldState,
@@ -580,10 +666,39 @@ win32ProcessXInputButton(
     newState.transitionsCount = oldState.isDown != newState.isDown ? 1 : 0;
 }
 
+private void
+win32ProcessXInputStick(
+    ref GameStickInput newState,
+    in ref GameStickInput oldState,
+    float stickX, float stickY
+) nothrow @nogc
+{
+    newState.startX = oldState.endX;
+    newState.startY = oldState.endY;
+    newState.endX   = stickX;
+    newState.endY   = stickY;
+}
+
+/// Mapping between platform-specific XInput buttons and Game buttons
+private enum Win32ControllerButtonMapping[] CONTROLLER_BUTTON_MAPPINGS = [
+    { GameButton.a,             XINPUT_GAMEPAD_A },
+    { GameButton.b,             XINPUT_GAMEPAD_B },
+    { GameButton.x,             XINPUT_GAMEPAD_X },
+    { GameButton.y,             XINPUT_GAMEPAD_Y },
+    { GameButton.dpadUp,        XINPUT_GAMEPAD_DPAD_UP },
+    { GameButton.dpadDown,      XINPUT_GAMEPAD_DPAD_DOWN },
+    { GameButton.dpadLeft,      XINPUT_GAMEPAD_DPAD_LEFT },
+    { GameButton.dpadRight,     XINPUT_GAMEPAD_DPAD_RIGHT },
+    { GameButton.start,         XINPUT_GAMEPAD_START },
+    { GameButton.back,          XINPUT_GAMEPAD_BACK },
+    { GameButton.leftShoulder,  XINPUT_GAMEPAD_LEFT_SHOULDER },
+    { GameButton.rightShoulder, XINPUT_GAMEPAD_RIGHT_SHOULDER }
+];
+
 extern (Windows) int
 main() nothrow @nogc
 {
-    HINSTANCE instance = GetModuleHandle(NULL);
+    HINSTANCE instance = GetModuleHandle(null);
 
     debug
     {
@@ -693,7 +808,7 @@ main() nothrow @nogc
 
     GameInput[2] gameInput;
     uint currInputIndex = 0;
-    uint lastInputIndex = 1;
+    uint prevInputIndex = 1;
 
     GameMemory gameMemory;
 
@@ -750,17 +865,18 @@ main() nothrow @nogc
 
     while (globalIsRunning)
     {
-        MSG message;
-        while (PeekMessage(&message, null, 0, 0, PM_REMOVE))
+        // NOTE: Preserving the key-down state from the previous frame
+        // The `isDown` flag should only be changed when the key is pressed or released
+        static foreach (keyboardIndex; 0..GAME_INPUT_KEYBOARDS_COUNT)
         {
-            if (message.message == WM_QUIT)
+            static foreach (keyIndex; 0..GAME_KEYS_COUNT)
             {
-                globalIsRunning = false;
+                gameInput[currInputIndex].keyboards[keyboardIndex].keys[keyIndex].isDown =
+                    gameInput[prevInputIndex].keyboards[keyboardIndex].keys[keyIndex].isDown;
             }
-
-            TranslateMessage(&message);
-            DispatchMessage(&message);
         }
+
+        win32ProcessWindowMessages(window, gameInput[currInputIndex].keyboards[0]);
 
         static assert(
             XUSER_MAX_COUNT <= GAME_INPUT_CONTROLLERS_COUNT,
@@ -771,82 +887,41 @@ main() nothrow @nogc
         foreach (userIndex; 0..XUSER_MAX_COUNT)
         {
             GameControllerInput* newController = &gameInput[currInputIndex].controllers[userIndex];
-            GameControllerInput* oldController = &gameInput[lastInputIndex].controllers[userIndex];
+            GameControllerInput* oldController = &gameInput[prevInputIndex].controllers[userIndex];
 
             XINPUT_STATE state;
             if (XInputGetState(userIndex, &state) == ERROR_SUCCESS)
             {
                 newController.isConnected = true;
 
-                win32ProcessXInputButton(
-                    newController.aButton, oldController.aButton,
-                    state.gamepad, XINPUT_GAMEPAD_A
-                );
-                win32ProcessXInputButton(
-                    newController.bButton, oldController.bButton,
-                    state.gamepad, XINPUT_GAMEPAD_B
-                );
-                win32ProcessXInputButton(
-                    newController.xButton, oldController.xButton,
-                    state.gamepad, XINPUT_GAMEPAD_X
-                );
-                win32ProcessXInputButton(
-                    newController.yButton, oldController.yButton,
-                    state.gamepad, XINPUT_GAMEPAD_Y
+                static foreach (mapping; CONTROLLER_BUTTON_MAPPINGS)
+                {
+                    win32ProcessXInputButton(
+                        newController.buttons[mapping.gameButton],
+                        oldController.buttons[mapping.gameButton],
+                        state.gamepad, mapping.xInputButton
+                    );
+                }
+
+                win32ProcessXInputStick(
+                    newController.leftStick,
+                    oldController.leftStick,
+                    state.gamepad.leftThumbX,
+                    state.gamepad.leftThumbY
                 );
 
-                win32ProcessXInputButton(
-                    newController.dpadUpButton, oldController.dpadUpButton,
-                    state.gamepad, XINPUT_GAMEPAD_DPAD_UP
+                win32ProcessXInputStick(
+                    newController.rightStick,
+                    oldController.rightStick,
+                    state.gamepad.rightThumbX,
+                    state.gamepad.rightThumbY
                 );
-                win32ProcessXInputButton(
-                    newController.dpadDownButton, oldController.dpadDownButton,
-                    state.gamepad, XINPUT_GAMEPAD_DPAD_DOWN
-                );
-                win32ProcessXInputButton(
-                    newController.dpadLeftButton, oldController.dpadLeftButton,
-                    state.gamepad, XINPUT_GAMEPAD_DPAD_LEFT
-                );
-                win32ProcessXInputButton(
-                    newController.dpadRightButton, oldController.dpadRightButton,
-                    state.gamepad, XINPUT_GAMEPAD_DPAD_RIGHT
-                );
-
-                win32ProcessXInputButton(
-                    newController.startButton, oldController.startButton,
-                    state.gamepad, XINPUT_GAMEPAD_START
-                );
-                win32ProcessXInputButton(
-                    newController.backButton, oldController.backButton,
-                    state.gamepad, XINPUT_GAMEPAD_BACK
-                );
-
-                win32ProcessXInputButton(
-                    newController.leftShoulderButton, oldController.leftShoulderButton,
-                    state.gamepad, XINPUT_GAMEPAD_LEFT_SHOULDER
-                );
-                win32ProcessXInputButton(
-                    newController.rightShoulderButton, oldController.rightShoulderButton,
-                    state.gamepad, XINPUT_GAMEPAD_RIGHT_SHOULDER
-                );
-
-                newController.leftStick.isAnalog = true;
-                newController.leftStick.startX = oldController.leftStick.endX;
-                newController.leftStick.startY = oldController.leftStick.endY;
-                newController.leftStick.endX = state.gamepad.leftThumbX;
-                newController.leftStick.endY = state.gamepad.leftThumbY;
-
-                newController.rightStick.isAnalog = true;
-                newController.rightStick.startX = oldController.rightStick.endX;
-                newController.rightStick.startY = oldController.rightStick.endY;
-                newController.rightStick.endX = state.gamepad.rightThumbX;
-                newController.rightStick.endY = state.gamepad.rightThumbY;
-                // TODO: Handle deadzones on thumbsticks
             }
             else
             {
                 // NOTE: Controller not connected
                 // TODO: Display or handle controllers going away?
+                // TODO: Reduce polling on disconnected controllers
                 newController.isConnected = false;
             }
 
@@ -931,7 +1006,7 @@ main() nothrow @nogc
 
         // Swap input indices
         currInputIndex = 1 - currInputIndex;
-        lastInputIndex = 1 - lastInputIndex;
+        prevInputIndex = 1 - prevInputIndex;
     }
 
     return 0;

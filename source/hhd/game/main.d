@@ -97,22 +97,39 @@ gameUpdateAndRender(
     // TODO: Handle the rest of the controllers
     GameControllerInput controllerInput = input.controllers[0];
 
-    if (controllerInput.leftStick.isAnalog)
+    // TODO: Handle the rest of the keyboards
+    GameKeyboardInput keyboardInput = input.keyboards[0];
+
+    if (controllerInput.isConnected)
     {
         // TODO: Analog input handling
         gameState.toneHz = cast(int)(256.0f + 256.0f * controllerInput.leftStick.endX);
         gameState.yOffset += cast(int)(10.0f * controllerInput.leftStick.endY);
     }
-    else
+
+    if (keyboardInput.wKey.isDown)
     {
-        // TODO: Digital input handling
+        gameState.yOffset -= 10;
+    }
+    if (keyboardInput.sKey.isDown)
+    {
+        gameState.yOffset += 10;
     }
 
-    if (controllerInput.xButton.isDown)
+    if (keyboardInput.qKey.isDown)
+    {
+        gameState.toneHz += 10;
+    }
+    else if (keyboardInput.eKey.isDown)
+    {
+        gameState.toneHz -= 10;
+    }
+
+    if (controllerInput.xButton.isDown || keyboardInput.dKey.isDown)
     {
         gameState.xOffset += 10;
     }
-    if (controllerInput.bButton.isDown)
+    if (controllerInput.bButton.isDown || keyboardInput.aKey.isDown)
     {
         gameState.xOffset -= 10;
     }

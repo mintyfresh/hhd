@@ -65,8 +65,6 @@ struct GameButtonInput
 
 struct GameStickInput
 {
-    bool isAnalog;
-
     float startX = 0.0;
     float startY = 0.0;
 
@@ -104,11 +102,71 @@ struct GameControllerInput
     }
 }
 
+enum GameKey : uint
+{
+    w,
+    a,
+    s,
+    d,
+    q,
+    e,
+    space,
+    escape
+}
+
+enum uint GAME_KEYS_COUNT = GameKey.max + 1;
+
+struct GameKeyInput
+{
+    bool isDown;
+    uint transitionsCount;
+
+    // TODO: These look identical to the GameButtonInput
+    // Extract these into a mixin or a common struct?
+
+    @property
+    bool isUp() const nothrow @nogc
+    {
+        return !isDown;
+    }
+
+    @property
+    bool wasPressed() const nothrow @nogc
+    {
+        return isDown && transitionsCount > 0;
+    }
+
+    @property
+    bool wasReleased() const nothrow @nogc
+    {
+        return !isDown && transitionsCount > 0;
+    }
+}
+
+struct GameKeyboardInput
+{
+    bool isConnected;
+
+    union
+    {
+        GameKeyInput[GAME_KEYS_COUNT] keys;
+        struct
+        {
+            static foreach (i; 0..GAME_KEYS_COUNT)
+            {
+                mixin("GameKeyInput " ~ __traits(allMembers, GameKey)[i] ~ "Key;");
+            }
+        }
+    }
+}
+
 enum GAME_INPUT_CONTROLLERS_COUNT = 4;
+enum GAME_INPUT_KEYBOARDS_COUNT = 1;
 
 struct GameInput
 {
     GameControllerInput[GAME_INPUT_CONTROLLERS_COUNT] controllers;
+    GameKeyboardInput[GAME_INPUT_KEYBOARDS_COUNT] keyboards;
 }
 
 struct GameMemory
