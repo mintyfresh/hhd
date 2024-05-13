@@ -1,12 +1,13 @@
 module hhd.platform.win32.types;
 
 import core.sys.windows.windows;
+import hhd.util.types;
 
 struct Win32SoundOutput
 {
     int sampleRate;
     int bytesPerSample;
-    int secondaryBufferSize;
+    DWORD secondaryBufferSize;
 
     int latencyInSamples;
     uint currentSampleIndex;
@@ -56,6 +57,11 @@ struct Win32WindowDimensions
 {
     LONG width;
     LONG height;
+
+    /// Returns the dimensions as a compile-time tuple.
+    /// Returns: (width, height)
+    @property
+    alias tuple = AliasSeq!(this.width, this.height);
 }
 
 struct Win32ControllerButtonMapping

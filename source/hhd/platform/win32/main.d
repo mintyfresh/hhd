@@ -320,6 +320,84 @@ win32FillSoundBuffer(
     }
 }
 
+pragma(inline, true)
+private uint
+win32CreateBRGPixel(uint red, uint green, uint blue) pure nothrow @nogc
+{
+    return (red << 16) | (green << 8) | (blue << 0);
+}
+
+private void
+win32DrawVerticalLine(
+    in ref Win32OffscreenBuffer buffer,
+    int x,
+    int top,
+    int bottom,
+    uint colour
+) nothrow @nogc
+{
+    if (top < 0)
+    {
+        top = 0;
+    }
+
+    if (bottom > buffer.height)
+    {
+        bottom = buffer.height;
+    }
+
+    if (x >= 0 && x < buffer.width)
+    {
+        ubyte* pixel = cast(ubyte*)(buffer.memory) + (x * buffer.BYTES_PER_PIXEL) + (top * buffer.pitch);
+
+        foreach (int y; top..bottom)
+        {
+            *(cast(uint*) pixel) = colour;
+            pixel += buffer.pitch;
+        }
+    }
+}
+
+private void
+win32DebugSyncDisplay(
+    in ref Win32OffscreenBuffer buffer,
+    in ref Win32SoundOutput soundOutput,
+    in DWORD[] playCursors,
+    in DWORD[] writeCursors,
+    float targetMillisPerUpdate
+) nothrow @nogc
+in
+{
+    assert(playCursors.length == writeCursors.length, "Mismatched cursor buffer lengths");
+}
+do
+{
+    // TODO: Draw where we're writing to the sound buffer
+
+    enum int PAD_X = 16;
+    enum int PAD_Y = 16;
+
+    immutable float bufferRatio = cast(float)(buffer.width - (2 * PAD_X))
+                                / cast(float)(soundOutput.secondaryBufferSize);
+
+    immutable int top = PAD_Y;
+    immutable int bottom = buffer.height - PAD_Y;
+
+    void win32DrawSoundBufferMarker(DWORD cursor, uint colour)
+    {
+        int cursorX = cast(int)(PAD_X + (bufferRatio * cast(float)(cursor)));
+        win32DrawVerticalLine(buffer, cursorX, top, bottom, colour);
+    }
+
+    foreach (index, playCursor; playCursors)
+    {
+        DWORD writeCursor = writeCursors[index];
+
+        win32DrawSoundBufferMarker(playCursor, win32CreateBRGPixel(255, 255, 255));
+        win32DrawSoundBufferMarker(writeCursor, win32CreateBRGPixel(255, 0, 0));
+    }
+}
+
 private void
 win32InitDirectSound(HWND window, DWORD sampleRate, DWORD bufferSize) nothrow @nogc
 {
@@ -764,6 +842,12 @@ main() nothrow @nogc
         writefln("HINSTANCE: %#x", instance);
     }
 
+    HANDLE process = GetCurrentProcess();
+    if (!SetPriorityClass(process, HIGH_PRIORITY_CLASS))
+    {
+        debug writeln("Failed to set process priority");
+    }
+
     win32LoadXInput();
     win32ResizeDIBSection(globalBackBuffer, 1280, 720);
 
@@ -827,6 +911,13 @@ main() nothrow @nogc
         writefln("Created window: %#x", window);
     }
 
+    // TODO: Should we consider decoupling the audio from the frame boundary?
+    // TODO: Use the write cursor to determine the audio latency
+
+    enum DWORD GAME_UPDATE_HZ = 30; // TODO: Query this from the system?
+    enum float TARGET_MILLIS_PER_UPDATE = MILLIS_PER_SECOND / GAME_UPDATE_HZ;
+    enum DWORD FRAMES_OF_AUDIO_LATENCY = 3; // 1 frame + 2(?!) safety frames
+
     // NOTE: Since we're using `CS_OWNDC`,
     // we can get the device context once and use it for the lifetime of the window
     HDC deviceContext = GetDC(window);
@@ -836,18 +927,20 @@ main() nothrow @nogc
     soundOutput.sampleRate = 48_000;
     soundOutput.bytesPerSample = 4;
     soundOutput.secondaryBufferSize = soundOutput.sampleRate * soundOutput.bytesPerSample;
-    soundOutput.latencyInSamples = soundOutput.sampleRate / 15;
+    soundOutput.latencyInSamples = (soundOutput.sampleRate / GAME_UPDATE_HZ) * FRAMES_OF_AUDIO_LATENCY;
 
     win32InitDirectSound(window, soundOutput.sampleRate, soundOutput.secondaryBufferSize);
 
+    // NOTE: We might not have sound output available
+    // `globalSecondaryBuffer` will be null if that's the case
     if (globalSecondaryBuffer)
     {
         win32ClearSoundBuffer(soundOutput);
         globalSecondaryBuffer.Play(0, 0, DSBPLAY_LOOPING);
     }
-    else debug
+    else
     {
-        writeln("No sound output available.");
+        debug writeln("No sound output available.");
     }
 
     globalIsRunning = true;
@@ -860,9 +953,6 @@ main() nothrow @nogc
         MEM_RESERVE | MEM_COMMIT,
         PAGE_READWRITE
     );
-
-    enum DWORD GAME_UPDATE_HZ = 30; // TODO: Query this from the system?
-    enum float TARGET_MILLIS_PER_UPDATE = MILLIS_PER_SECOND / GAME_UPDATE_HZ;
 
     enum UINT REQUESTED_SCHEDULER_RESOLUTION = 1; // 1ms
     // NOTE: Request Windows scheduler to give us 1ms resolution
@@ -905,6 +995,9 @@ main() nothrow @nogc
 
     GameMemory gameMemory;
     win32AllocateGameMemory(gameMemory);
+
+    bool soundIsValid;
+    DWORD lastPlayCursor;
 
     immutable long perfCounterFrequency = win32GetPerformanceFrequency();
     long prevFrameTimer = win32GetPerformanceCounter();
@@ -981,17 +1074,17 @@ main() nothrow @nogc
             }
         }
 
-        bool soundIsValid;
-        DWORD byteToLock, bytesToWrite;
-        DWORD playCursor, writeCursor, targetCursor;
-        // TODO: Tighten up sound logic so we know where should be writing to
-        // and can predict the time spent in the game update
-        if (globalSecondaryBuffer && SUCCEEDED(globalSecondaryBuffer.GetCurrentPosition(&playCursor, &writeCursor)))
+        // NOTE: Calculate how much of the sound buffer to write
+        DWORD byteToLock;
+        DWORD bytesToWrite;
+        DWORD targetCursor;
+
+        if (soundIsValid)
         {
             byteToLock = (soundOutput.currentSampleIndex * soundOutput.bytesPerSample)
                        % soundOutput.secondaryBufferSize;
 
-            targetCursor = (playCursor + (soundOutput.latencyInSamples * soundOutput.bytesPerSample))
+            targetCursor = (lastPlayCursor + (soundOutput.latencyInSamples * soundOutput.bytesPerSample))
                          % soundOutput.secondaryBufferSize;
 
             if (byteToLock > targetCursor)
@@ -1002,8 +1095,6 @@ main() nothrow @nogc
             {
                 bytesToWrite = targetCursor - byteToLock;
             }
-
-            soundIsValid = true;
         }
 
         GameOffscreenBuffer gameOffscreenBuffer = {
@@ -1014,7 +1105,6 @@ main() nothrow @nogc
         };
         gameUpdateAndRender(gameMemory, gameInput[currInputIndex], gameOffscreenBuffer);
 
-        // TODO: Sound is wrong now because we haven't updated it for the new frame loop
         GameSoundOutputBuffer gameSoundBuffer = {
             samples:     gameSoundSamples,
             sampleRate:  soundOutput.sampleRate,
@@ -1028,33 +1118,29 @@ main() nothrow @nogc
             win32FillSoundBuffer(soundOutput, gameSoundBuffer, byteToLock, bytesToWrite);
         }
 
-        ulong currCycleCount = win32GetCycleCounter();
-        long currFrameTimer  = win32GetPerformanceCounter();
-        long cyclesElapsed   = currCycleCount - prevCycleCount;
-        long timerElapsed    = currFrameTimer - prevFrameTimer;
-        float millisPerFrame = (MILLIS_PER_SECOND * timerElapsed) / perfCounterFrequency;
+        long postUpdateFrameTimer = win32GetPerformanceCounter();
+        long postUpdateTimerElapsed = postUpdateFrameTimer - prevFrameTimer;
+        float millisPerFrame = (MILLIS_PER_SECOND * postUpdateTimerElapsed) / perfCounterFrequency;
 
         // Sync to our target frame rate
         if (millisPerFrame < TARGET_MILLIS_PER_UPDATE)
         {
-            float millisToSleep = TARGET_MILLIS_PER_UPDATE - millisPerFrame;
+            uint millisToSleep = cast(uint)(TARGET_MILLIS_PER_UPDATE - millisPerFrame);
 
-            // Sleep or spin until we're ready to blit the frame
-            while (millisToSleep > 0)
+            // TODO: Should we do something other than a spinlock if we don't have a high resolution timer?
+            if (isTimerHighResolution && millisToSleep >= minSleepInMillis)
             {
-                // TODO: Should we do something other than a spinlock if we don't have a high resolution timer?
-                if (isTimerHighResolution && millisToSleep >= minSleepInMillis)
-                {
-                    Sleep(cast(DWORD) millisToSleep);
-                }
-
-                currCycleCount = win32GetCycleCounter();
-                currFrameTimer = win32GetPerformanceCounter();
-                cyclesElapsed  = currCycleCount - prevCycleCount;
-                timerElapsed   = currFrameTimer - prevFrameTimer;
-                millisPerFrame = (MILLIS_PER_SECOND * timerElapsed) / perfCounterFrequency;
-                millisToSleep  = TARGET_MILLIS_PER_UPDATE - millisPerFrame;
+                Sleep(cast(DWORD)(millisToSleep - 0.5f));
             }
+
+            // Spin until we're ready to blit the frame
+            do
+            {
+                postUpdateFrameTimer = win32GetPerformanceCounter();
+                postUpdateTimerElapsed = postUpdateFrameTimer - prevFrameTimer;
+                millisPerFrame = (MILLIS_PER_SECOND * postUpdateTimerElapsed) / perfCounterFrequency;
+            }
+            while (millisPerFrame < TARGET_MILLIS_PER_UPDATE);
         }
         else
         {
@@ -1062,24 +1148,66 @@ main() nothrow @nogc
             debug writeln("Missed frame rate!");
         }
 
-        auto dimensions = win32GetWindowDimensions(window);
+        // NOTE: Snapshot the time just before we present the frame
+        long presentFrameTimer = win32GetPerformanceCounter();
+        long presentTimerElapsed = presentFrameTimer - prevFrameTimer;
+        ulong presentCycleCount = win32GetCycleCounter();
 
-        win32BlitBufferToWindow(
-            globalBackBuffer, deviceContext,
-            dimensions.width, dimensions.height
-        );
+        debug
+        {
+            static size_t debugFrameIndex;
+            static DWORD[GAME_UPDATE_HZ / 2] debugPlayCursorPrev, debugWriteCursorPrev;
+
+            win32DebugSyncDisplay(
+                globalBackBuffer, soundOutput,
+                debugPlayCursorPrev,
+                debugWriteCursorPrev,
+                TARGET_MILLIS_PER_UPDATE
+            );
+        }
+
+        const dimensions = win32GetWindowDimensions(window);
+        win32BlitBufferToWindow(globalBackBuffer, deviceContext, dimensions.tuple);
+
+        DWORD playCursor, writeCursor;
+        if (globalSecondaryBuffer && globalSecondaryBuffer.GetCurrentPosition(&playCursor, &writeCursor) == DS_OK)
+        {
+            lastPlayCursor = playCursor;
+
+            if (!soundIsValid)
+            {
+                soundOutput.currentSampleIndex = writeCursor / soundOutput.bytesPerSample;
+                soundIsValid = true;
+            }
+        }
+        else
+        {
+            soundIsValid = false;
+        }
+
+        debug
+        {
+            if (globalSecondaryBuffer)
+            {
+                debugPlayCursorPrev[debugFrameIndex] = playCursor;
+                debugWriteCursorPrev[debugFrameIndex] = writeCursor;
+                debugFrameIndex = (debugFrameIndex + 1) % (GAME_UPDATE_HZ / 2);
+            }
+        }
 
         debug
         {
             enum float MEGACYCLE = 1_000_000.0f;
 
-            float fps = cast(float)(perfCounterFrequency) / cast(float)(timerElapsed);
+            long cyclesElapsed = presentCycleCount - prevCycleCount;
+            millisPerFrame = (MILLIS_PER_SECOND * presentTimerElapsed) / perfCounterFrequency;
+            float fps = cast(float)(perfCounterFrequency) / cast(float)(presentTimerElapsed);
 
-            writefln("Frame time: %.2fms/f (%.2f FPS) %.2fMC/f", millisPerFrame, fps, cyclesElapsed / MEGACYCLE);
+            writefln("Frame time: %.02fms/f (%.02f FPS) %.02fMC/f", millisPerFrame, fps, cyclesElapsed / MEGACYCLE);
         }
 
-        prevFrameTimer = currFrameTimer;
-        prevCycleCount = currCycleCount;
+        prevFrameTimer = presentFrameTimer;
+        prevCycleCount = presentCycleCount;
 
         // Swap input indices
         currInputIndex = 1 - currInputIndex;
