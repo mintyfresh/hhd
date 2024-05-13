@@ -35,13 +35,6 @@ debug
  + - More!!
  +/
 
-/// XInput libraries in order of preference
-private immutable const(char)*[] X_INPUT_LIBRARIES = [
-    "xinput1_4.dll",
-    "xinput1_3.dll",
-    "xinput9_1_0.dll"
-];
-
 __gshared private
 {
     // TODO: Extract this from global state
@@ -49,6 +42,55 @@ __gshared private
     Win32OffscreenBuffer globalBackBuffer;
     LPDIRECTSOUNDBUFFER globalSecondaryBuffer;
 }
+
+enum float MILLIS_PER_SECOND = 1000.0f;
+
+/// Mapping between platform-specific XInput buttons and Game buttons
+private enum Win32ControllerButtonMapping[] CONTROLLER_BUTTON_MAPPINGS = [
+    { GameButton.a,             XINPUT_GAMEPAD_A },
+    { GameButton.b,             XINPUT_GAMEPAD_B },
+    { GameButton.x,             XINPUT_GAMEPAD_X },
+    { GameButton.y,             XINPUT_GAMEPAD_Y },
+    { GameButton.dpadUp,        XINPUT_GAMEPAD_DPAD_UP },
+    { GameButton.dpadDown,      XINPUT_GAMEPAD_DPAD_DOWN },
+    { GameButton.dpadLeft,      XINPUT_GAMEPAD_DPAD_LEFT },
+    { GameButton.dpadRight,     XINPUT_GAMEPAD_DPAD_RIGHT },
+    { GameButton.start,         XINPUT_GAMEPAD_START },
+    { GameButton.back,          XINPUT_GAMEPAD_BACK },
+    { GameButton.leftShoulder,  XINPUT_GAMEPAD_LEFT_SHOULDER },
+    { GameButton.rightShoulder, XINPUT_GAMEPAD_RIGHT_SHOULDER }
+];
+
+// Base addresses for permanent and transient storage
+debug
+{
+    version (Win64)
+    {
+        // NOTE: In debug mode, we ask for well-known addresses to simplify debugging
+        // (All temporary and permanent memory objects should be placed at the same addresses every time)
+        enum LPVOID PERMANENT_STORAGE_ADDRESS = cast(LPVOID) 1.terabytes;
+        enum LPVOID TRANSIENT_STORAGE_ADDRESS = cast(LPVOID) 2.terabytes;
+    }
+    else
+    {
+        // TODO: Figure out where to put these on 32-bit platforms
+        enum LPVOID PERMANENT_STORAGE_ADDRESS = cast(LPVOID) 0;
+        enum LPVOID TRANSIENT_STORAGE_ADDRESS = cast(LPVOID) 0;
+    }
+}
+else
+{
+    // NOTE: In release mode, use whatever address is available
+    enum LPVOID PERMANENT_STORAGE_ADDRESS = cast(LPVOID) 0;
+    enum LPVOID TRANSIENT_STORAGE_ADDRESS = cast(LPVOID) 0;
+}
+
+/// XInput libraries in order of preference
+private immutable const(char)*[] X_INPUT_LIBRARIES = [
+    "xinput1_4.dll",
+    "xinput1_3.dll",
+    "xinput9_1_0.dll"
+];
 
 extern (System) nothrow @nogc
 {
@@ -679,21 +721,37 @@ win32ProcessXInputStick(
     newState.endY   = stickY;
 }
 
-/// Mapping between platform-specific XInput buttons and Game buttons
-private enum Win32ControllerButtonMapping[] CONTROLLER_BUTTON_MAPPINGS = [
-    { GameButton.a,             XINPUT_GAMEPAD_A },
-    { GameButton.b,             XINPUT_GAMEPAD_B },
-    { GameButton.x,             XINPUT_GAMEPAD_X },
-    { GameButton.y,             XINPUT_GAMEPAD_Y },
-    { GameButton.dpadUp,        XINPUT_GAMEPAD_DPAD_UP },
-    { GameButton.dpadDown,      XINPUT_GAMEPAD_DPAD_DOWN },
-    { GameButton.dpadLeft,      XINPUT_GAMEPAD_DPAD_LEFT },
-    { GameButton.dpadRight,     XINPUT_GAMEPAD_DPAD_RIGHT },
-    { GameButton.start,         XINPUT_GAMEPAD_START },
-    { GameButton.back,          XINPUT_GAMEPAD_BACK },
-    { GameButton.leftShoulder,  XINPUT_GAMEPAD_LEFT_SHOULDER },
-    { GameButton.rightShoulder, XINPUT_GAMEPAD_RIGHT_SHOULDER }
-];
+private void
+win32AllocateGameMemory(scope ref GameMemory memory) nothrow @nogc
+{
+    memory.permanentStorageSize = 64.megabytes;
+    memory.permanentStorage = VirtualAlloc(
+        PERMANENT_STORAGE_ADDRESS,
+        memory.permanentStorageSize,
+        MEM_RESERVE | MEM_COMMIT,
+        PAGE_READWRITE
+    );
+
+    debug
+    {
+        assert(memory.permanentStorage, "Failed to allocate permanent storage");
+        writefln("Allocated permanent storage: %#x", memory.permanentStorage);
+    }
+
+    memory.transientStorageSize = 2.gigabytes;
+    memory.transientStorage = VirtualAlloc(
+        TRANSIENT_STORAGE_ADDRESS,
+        memory.transientStorageSize,
+        MEM_RESERVE | MEM_COMMIT,
+        PAGE_READWRITE
+    );
+
+    debug
+    {
+        assert(memory.transientStorage, "Failed to allocate transient storage");
+        writefln("Allocated transient storage: %#x", memory.transientStorage);
+    }
+}
 
 extern (Windows) int
 main() nothrow @nogc
@@ -795,6 +853,7 @@ main() nothrow @nogc
     globalIsRunning = true;
 
     // TODO: Do we need this much space?
+    // TODO: Should we consolidate this with the game memory?
     short* gameSoundSamples = cast(short*) VirtualAlloc(
         null,
         soundOutput.secondaryBufferSize,
@@ -802,66 +861,54 @@ main() nothrow @nogc
         PAGE_READWRITE
     );
 
-    immutable long perfCounterFrequency = win32GetPerformanceFrequency();
-    long lastFrameCounter = win32GetPerformanceCounter();
-    ulong lastCycleCounter = win32GetCycleCounter();
+    enum DWORD GAME_UPDATE_HZ = 30; // TODO: Query this from the system?
+    enum float TARGET_MILLIS_PER_UPDATE = MILLIS_PER_SECOND / GAME_UPDATE_HZ;
+
+    enum UINT REQUESTED_SCHEDULER_RESOLUTION = 1; // 1ms
+    // NOTE: Request Windows scheduler to give us 1ms resolution
+    // This is used to sleep precisely the thread between frames
+    immutable bool isTimerHighResolution = timeBeginPeriod(REQUESTED_SCHEDULER_RESOLUTION) == TIMERR_NOERROR;
+
+    if (isTimerHighResolution)
+    {
+        debug writeln("Set timer resolution to 1ms");
+    }
+    else
+    {
+        debug writeln("Failed to set timer resolution");
+    }
+
+    scope (exit)
+    {
+        // NOTE: Windows documentation specifically says to call `timeEndPeriod` when done
+        // Not sure what the purpose of that is, but we'll do it anyway
+        isTimerHighResolution && timeEndPeriod(REQUESTED_SCHEDULER_RESOLUTION);
+    }
+
+    TIMECAPS timerCapabilities;
+    if (timeGetDevCaps(&timerCapabilities, TIMECAPS.sizeof) == TIMERR_NOERROR)
+    {
+        debug writefln("Timer resolution: %dms - %dms", timerCapabilities.wPeriodMin, timerCapabilities.wPeriodMax);
+    }
+    else
+    {
+        debug writeln("Failed to get timer resolution");
+    }
+
+    // NOTE: Add a bit of slop to the minimum duration in case the OS misbehaves
+    // We'll take the hit and spinlock for an extra millisecond if we have to
+    immutable UINT minSleepInMillis = timerCapabilities.wPeriodMin;
 
     GameInput[2] gameInput;
     uint currInputIndex = 0;
     uint prevInputIndex = 1;
 
     GameMemory gameMemory;
+    win32AllocateGameMemory(gameMemory);
 
-    debug
-    {
-        version (Win64)
-        {
-            // NOTE: In debug mode, we ask for well-known addresses to simplify debugging
-            // (All temporary and permanent memory objects should be placed at the same addresses every time)
-            enum LPVOID PERMANENT_STORAGE_ADDRESS = cast(LPVOID) 1.terabytes;
-            enum LPVOID TRANSIENT_STORAGE_ADDRESS = cast(LPVOID) 2.terabytes;
-        }
-        else
-        {
-            // TODO: Figure out where to put these on 32-bit platforms
-            enum LPVOID PERMANENT_STORAGE_ADDRESS = cast(LPVOID) 0;
-            enum LPVOID TRANSIENT_STORAGE_ADDRESS = cast(LPVOID) 0;
-        }
-    }
-    else
-    {
-        // NOTE: In release mode, use whatever address is available
-        enum LPVOID PERMANENT_STORAGE_ADDRESS = cast(LPVOID) 0;
-        enum LPVOID TRANSIENT_STORAGE_ADDRESS = cast(LPVOID) 0;
-    }
-
-    gameMemory.permanentStorageSize = 64.megabytes;
-    gameMemory.permanentStorage = VirtualAlloc(
-        PERMANENT_STORAGE_ADDRESS,
-        gameMemory.permanentStorageSize,
-        MEM_RESERVE | MEM_COMMIT,
-        PAGE_READWRITE
-    );
-
-    debug
-    {
-        assert(gameMemory.permanentStorage, "Failed to allocate permanent storage");
-        writefln("Allocated permanent storage: %#x", gameMemory.permanentStorage);
-    }
-
-    gameMemory.transientStorageSize = 2.gigabytes;
-    gameMemory.transientStorage = VirtualAlloc(
-        TRANSIENT_STORAGE_ADDRESS,
-        gameMemory.transientStorageSize,
-        MEM_RESERVE | MEM_COMMIT,
-        PAGE_READWRITE
-    );
-
-    debug
-    {
-        assert(gameMemory.transientStorage, "Failed to allocate transient storage");
-        writefln("Allocated transient storage: %#x", gameMemory.transientStorage);
-    }
+    immutable long perfCounterFrequency = win32GetPerformanceFrequency();
+    long prevFrameTimer = win32GetPerformanceCounter();
+    ulong prevCycleCount = win32GetCycleCounter();
 
     while (globalIsRunning)
     {
@@ -967,6 +1014,7 @@ main() nothrow @nogc
         };
         gameUpdateAndRender(gameMemory, gameInput[currInputIndex], gameOffscreenBuffer);
 
+        // TODO: Sound is wrong now because we haven't updated it for the new frame loop
         GameSoundOutputBuffer gameSoundBuffer = {
             samples:     gameSoundSamples,
             sampleRate:  soundOutput.sampleRate,
@@ -980,6 +1028,40 @@ main() nothrow @nogc
             win32FillSoundBuffer(soundOutput, gameSoundBuffer, byteToLock, bytesToWrite);
         }
 
+        ulong currCycleCount = win32GetCycleCounter();
+        long currFrameTimer  = win32GetPerformanceCounter();
+        long cyclesElapsed   = currCycleCount - prevCycleCount;
+        long timerElapsed    = currFrameTimer - prevFrameTimer;
+        float millisPerFrame = (MILLIS_PER_SECOND * timerElapsed) / perfCounterFrequency;
+
+        // Sync to our target frame rate
+        if (millisPerFrame < TARGET_MILLIS_PER_UPDATE)
+        {
+            float millisToSleep = TARGET_MILLIS_PER_UPDATE - millisPerFrame;
+
+            // Sleep or spin until we're ready to blit the frame
+            while (millisToSleep > 0)
+            {
+                // TODO: Should we do something other than a spinlock if we don't have a high resolution timer?
+                if (isTimerHighResolution && millisToSleep >= minSleepInMillis)
+                {
+                    Sleep(cast(DWORD) millisToSleep);
+                }
+
+                currCycleCount = win32GetCycleCounter();
+                currFrameTimer = win32GetPerformanceCounter();
+                cyclesElapsed  = currCycleCount - prevCycleCount;
+                timerElapsed   = currFrameTimer - prevFrameTimer;
+                millisPerFrame = (MILLIS_PER_SECOND * timerElapsed) / perfCounterFrequency;
+                millisToSleep  = TARGET_MILLIS_PER_UPDATE - millisPerFrame;
+            }
+        }
+        else
+        {
+            // TODO: Handle missed frame rate
+            debug writeln("Missed frame rate!");
+        }
+
         auto dimensions = win32GetWindowDimensions(window);
 
         win32BlitBufferToWindow(
@@ -987,22 +1069,17 @@ main() nothrow @nogc
             dimensions.width, dimensions.height
         );
 
-        ulong thisCycleCounter = win32GetCycleCounter();
-        long thisFrameCounter = win32GetPerformanceCounter();
-        long cyclesElapsed = thisCycleCounter - lastCycleCounter;
-        long counterElapsed = thisFrameCounter - lastFrameCounter;
-
-        float millisPerFrame = (1000.0f * counterElapsed) / perfCounterFrequency;
-        float fps = cast(float)(perfCounterFrequency) / cast(float)(counterElapsed);
-
         debug
         {
             enum float MEGACYCLE = 1_000_000.0f;
+
+            float fps = cast(float)(perfCounterFrequency) / cast(float)(timerElapsed);
+
             writefln("Frame time: %.2fms/f (%.2f FPS) %.2fMC/f", millisPerFrame, fps, cyclesElapsed / MEGACYCLE);
         }
 
-        lastFrameCounter = thisFrameCounter;
-        lastCycleCounter = thisCycleCounter;
+        prevFrameTimer = currFrameTimer;
+        prevCycleCount = currCycleCount;
 
         // Swap input indices
         currInputIndex = 1 - currInputIndex;
