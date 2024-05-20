@@ -39,6 +39,7 @@ __gshared private
 {
     // TODO: Extract this from global state
     bool globalIsRunning;
+    bool globalDebugPause;
     Win32OffscreenBuffer globalBackBuffer;
     LPDIRECTSOUNDBUFFER globalSecondaryBuffer;
 }
@@ -364,6 +365,7 @@ win32DebugSyncDisplay(
     in ref Win32SoundOutput soundOutput,
     in DWORD[] playCursors,
     in DWORD[] writeCursors,
+    in int currentCursorIndex,
     float targetMillisPerUpdate
 ) nothrow @nogc
 in
@@ -376,15 +378,25 @@ do
 
     enum int PAD_X = 16;
     enum int PAD_Y = 16;
+    enum int LINE_HEIGHT = 64;
 
     immutable float bufferRatio = cast(float)(buffer.width - (2 * PAD_X))
                                 / cast(float)(soundOutput.secondaryBufferSize);
 
-    immutable int top = PAD_Y;
-    immutable int bottom = buffer.height - PAD_Y;
+    enum int TOP = PAD_Y;
+    enum int BOTTOM = PAD_Y + LINE_HEIGHT;
 
-    void win32DrawSoundBufferMarker(DWORD cursor, uint colour)
+    void win32DrawSoundBufferMarker(DWORD cursor, uint colour, bool current)
     {
+        int top = TOP;
+        int bottom = BOTTOM;
+
+        if (current)
+        {
+            top += LINE_HEIGHT + PAD_Y;
+            bottom += LINE_HEIGHT + PAD_Y;
+        }
+
         int cursorX = cast(int)(PAD_X + (bufferRatio * cast(float)(cursor)));
         win32DrawVerticalLine(buffer, cursorX, top, bottom, colour);
     }
@@ -393,8 +405,11 @@ do
     {
         DWORD writeCursor = writeCursors[index];
 
-        win32DrawSoundBufferMarker(playCursor, win32CreateBRGPixel(255, 255, 255));
-        win32DrawSoundBufferMarker(writeCursor, win32CreateBRGPixel(255, 0, 0));
+        uint playColour = win32CreateBRGPixel(255, 255, 255);
+        uint writeColour = win32CreateBRGPixel(255, 0, 0);
+
+        win32DrawSoundBufferMarker(playCursor, playColour, index == currentCursorIndex);
+        win32DrawSoundBufferMarker(writeCursor, writeColour, index == currentCursorIndex);
     }
 }
 
@@ -754,6 +769,15 @@ win32ProcessWindowMessages(HWND window, scope ref GameKeyboardInput input) nothr
                         }
                         break;
 
+                        case 'P':
+                        {
+                            if (currDown)
+                            {
+                                globalDebugPause = !globalDebugPause;
+                            }
+                        }
+                        break;
+
                         default:
                         {
                             // TODO: Add handling for remaining keys
@@ -911,12 +935,8 @@ main() nothrow @nogc
         writefln("Created window: %#x", window);
     }
 
-    // TODO: Should we consider decoupling the audio from the frame boundary?
-    // TODO: Use the write cursor to determine the audio latency
-
-    enum DWORD GAME_UPDATE_HZ = 30; // TODO: Query this from the system?
+    enum DWORD GAME_UPDATE_HZ = 60; // TODO: Query this from the system?
     enum float TARGET_MILLIS_PER_UPDATE = MILLIS_PER_SECOND / GAME_UPDATE_HZ;
-    enum DWORD FRAMES_OF_AUDIO_LATENCY = 3; // 1 frame + 2(?!) safety frames
 
     // NOTE: Since we're using `CS_OWNDC`,
     // we can get the device context once and use it for the lifetime of the window
@@ -927,7 +947,9 @@ main() nothrow @nogc
     soundOutput.sampleRate = 48_000;
     soundOutput.bytesPerSample = 4;
     soundOutput.secondaryBufferSize = soundOutput.sampleRate * soundOutput.bytesPerSample;
-    soundOutput.latencyInSamples = (soundOutput.sampleRate / GAME_UPDATE_HZ) * FRAMES_OF_AUDIO_LATENCY;
+    soundOutput.latencyInSamples = 3 * (soundOutput.sampleRate / GAME_UPDATE_HZ);
+    // TODO: Determine the what lowest reasonable value is
+    soundOutput.safetyBytes = soundOutput.bytesPerSecond / (GAME_UPDATE_HZ / 3);
 
     win32InitDirectSound(window, soundOutput.sampleRate, soundOutput.secondaryBufferSize);
 
@@ -997,8 +1019,6 @@ main() nothrow @nogc
     win32AllocateGameMemory(gameMemory);
 
     bool soundIsValid;
-    DWORD lastPlayCursor;
-
     immutable long perfCounterFrequency = win32GetPerformanceFrequency();
     long prevFrameTimer = win32GetPerformanceCounter();
     ulong prevCycleCount = win32GetCycleCounter();
@@ -1022,6 +1042,12 @@ main() nothrow @nogc
             XUSER_MAX_COUNT <= GAME_INPUT_CONTROLLERS_COUNT,
             "XUSER_MAX_COUNT must be less than or equal to GAME_INPUT_CONTROLLERS_COUNT"
         );
+
+        if (globalDebugPause)
+        {
+            // NOTE: Pause the game
+            continue;
+        }
 
         // TODO: Should this be polled more frequently?
         foreach (userIndex; 0..XUSER_MAX_COUNT)
@@ -1074,29 +1100,6 @@ main() nothrow @nogc
             }
         }
 
-        // NOTE: Calculate how much of the sound buffer to write
-        DWORD byteToLock;
-        DWORD bytesToWrite;
-        DWORD targetCursor;
-
-        if (soundIsValid)
-        {
-            byteToLock = (soundOutput.currentSampleIndex * soundOutput.bytesPerSample)
-                       % soundOutput.secondaryBufferSize;
-
-            targetCursor = (lastPlayCursor + (soundOutput.latencyInSamples * soundOutput.bytesPerSample))
-                         % soundOutput.secondaryBufferSize;
-
-            if (byteToLock > targetCursor)
-            {
-                bytesToWrite = (soundOutput.secondaryBufferSize - byteToLock) + targetCursor;
-            }
-            else
-            {
-                bytesToWrite = targetCursor - byteToLock;
-            }
-        }
-
         GameOffscreenBuffer gameOffscreenBuffer = {
             memory: globalBackBuffer.memory,
             width:  globalBackBuffer.width,
@@ -1105,17 +1108,78 @@ main() nothrow @nogc
         };
         gameUpdateAndRender(gameMemory, gameInput[currInputIndex], gameOffscreenBuffer);
 
-        GameSoundOutputBuffer gameSoundBuffer = {
-            samples:     gameSoundSamples,
-            sampleRate:  soundOutput.sampleRate,
-            sampleCount: bytesToWrite / soundOutput.bytesPerSample
-        };
-        // TODO: Allow sample offsets here for more robust platform options
-        gameOutputSound(gameMemory, gameSoundBuffer);
-
-        if (soundIsValid)
+        DWORD playCursor;
+        DWORD writeCursor;
+        if (globalSecondaryBuffer && SUCCEEDED(globalSecondaryBuffer.GetCurrentPosition(&playCursor, &writeCursor)))
         {
+            if (!soundIsValid)
+            {
+                soundOutput.currentSampleIndex = writeCursor / soundOutput.bytesPerSample;
+                soundIsValid = true;
+            }
+
+            DWORD byteToLock;
+            byteToLock = (soundOutput.currentSampleIndex * soundOutput.bytesPerSample)
+                       % soundOutput.secondaryBufferSize;
+
+            DWORD expectedSoundBytesPerFrame = soundOutput.bytesPerSecond / GAME_UPDATE_HZ;
+            DWORD expectedFrameBoundaryByte = playCursor + expectedSoundBytesPerFrame;
+
+            DWORD safeWriteCursor = writeCursor;
+            if (safeWriteCursor < playCursor)
+            {
+                safeWriteCursor += soundOutput.secondaryBufferSize;
+            }
+
+            debug
+            {
+                assert(safeWriteCursor >= playCursor, "Write cursor should be ahead of play cursor");
+            }
+
+            safeWriteCursor += soundOutput.safetyBytes;
+
+            bool audioIsLowLatency = safeWriteCursor < expectedFrameBoundaryByte;
+
+            DWORD targetCursor;
+            if (audioIsLowLatency)
+            {
+                targetCursor = expectedFrameBoundaryByte + expectedSoundBytesPerFrame;
+            }
+            else
+            {
+                targetCursor = writeCursor + expectedSoundBytesPerFrame + soundOutput.safetyBytes;
+            }
+
+            debug
+            {
+                writeln("audioIsLowLatency: ", audioIsLowLatency);
+            }
+
+            targetCursor %= soundOutput.secondaryBufferSize;
+
+            DWORD bytesToWrite;
+            if (byteToLock > targetCursor)
+            {
+                bytesToWrite = (soundOutput.secondaryBufferSize - byteToLock) + targetCursor;
+            }
+            else
+            {
+                bytesToWrite = targetCursor - byteToLock;
+            }
+
+            GameSoundOutputBuffer gameSoundBuffer = {
+                samples:     gameSoundSamples,
+                sampleRate:  soundOutput.sampleRate,
+                sampleCount: bytesToWrite / soundOutput.bytesPerSample
+            };
+
+            gameOutputSound(gameMemory, gameSoundBuffer);
+
             win32FillSoundBuffer(soundOutput, gameSoundBuffer, byteToLock, bytesToWrite);
+        }
+        else
+        {
+            soundIsValid = false;
         }
 
         long postUpdateFrameTimer = win32GetPerformanceCounter();
@@ -1162,28 +1226,13 @@ main() nothrow @nogc
                 globalBackBuffer, soundOutput,
                 debugPlayCursorPrev,
                 debugWriteCursorPrev,
+                cast(int)(debugFrameIndex - 1),
                 TARGET_MILLIS_PER_UPDATE
             );
         }
 
         const dimensions = win32GetWindowDimensions(window);
         win32BlitBufferToWindow(globalBackBuffer, deviceContext, dimensions.tuple);
-
-        DWORD playCursor, writeCursor;
-        if (globalSecondaryBuffer && globalSecondaryBuffer.GetCurrentPosition(&playCursor, &writeCursor) == DS_OK)
-        {
-            lastPlayCursor = playCursor;
-
-            if (!soundIsValid)
-            {
-                soundOutput.currentSampleIndex = writeCursor / soundOutput.bytesPerSample;
-                soundIsValid = true;
-            }
-        }
-        else
-        {
-            soundIsValid = false;
-        }
 
         debug
         {

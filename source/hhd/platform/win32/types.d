@@ -8,12 +8,20 @@ struct Win32SoundOutput
     int sampleRate;
     int bytesPerSample;
     DWORD secondaryBufferSize;
+    DWORD safetyBytes;
 
     int latencyInSamples;
     uint currentSampleIndex;
 
     @property
     enum ushort CHANNELS_COUNT = 2; 
+
+    @property
+    pragma(inline, true)
+    int bytesPerSecond() const nothrow @nogc
+    {
+        return sampleRate * bytesPerSample;
+    }
 }
 
 struct Win32OffscreenBuffer

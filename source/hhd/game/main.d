@@ -31,6 +31,11 @@ gameOutputSound(
         tSine += tonePeriod != 0.0f
             ? (2.0f * PI) / tonePeriod
             : 0.0f;
+
+        if (tSine > 2.0f * PI)
+        {
+            tSine -= 2.0f * PI;
+        }
     }
 }
 
