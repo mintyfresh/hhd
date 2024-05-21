@@ -6,14 +6,22 @@ docs/
 hhd.so
 hhd.dylib
 hhd.dll
+hhd.ilk
 hhd.a
 hhd.lib
 hhd-test-*
+hhd-game.dll
+hhd-game.exp
+hhd-game.lib
+hhd-game.ilk
 *.exe
 *.pdb
 *.o
 *.obj
 *.lst
+
+# Build artifacts
+/build/*
 
 # Test artifacts
 /tmp/*

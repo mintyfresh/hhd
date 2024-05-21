@@ -93,120 +93,6 @@ private immutable const(char)*[] X_INPUT_LIBRARIES = [
     "xinput9_1_0.dll"
 ];
 
-extern (System) nothrow @nogc
-{
-    // Debug-only functions
-    // See: hhd.platform.common
-    debug
-    {
-        /// See: hhd.platform.common.debugReadEntireFile
-        void[] debugReadEntireFile(const(char)* fileName)
-        {
-            assert(fileName, "File name is null");
-
-            HANDLE file = CreateFileA(
-                fileName,
-                GENERIC_READ,
-                FILE_SHARE_READ,
-                null,
-                OPEN_EXISTING,
-                FILE_ATTRIBUTE_NORMAL,
-                null
-            );
-
-            if (file == INVALID_HANDLE_VALUE)
-            {
-                debug writeln("Failed to open file: ", fileName);
-                return null;
-            }
-
-            scope (exit)
-            {
-                CloseHandle(file);
-            }
-
-            LARGE_INTEGER rawFileSize;
-            if (!GetFileSizeEx(file, &rawFileSize))
-            {
-                debug writeln("Failed to get file size: ", fileName);
-                return null;
-            }
-
-            // TODO: Handle large files
-            assert(rawFileSize.QuadPart <= DWORD.max, "File is too large (greater than 4GB)");
-            DWORD fileSize = cast(DWORD) rawFileSize.QuadPart;
-
-            void* fileMemory = VirtualAlloc(
-                null,
-                fileSize,
-                MEM_RESERVE | MEM_COMMIT,
-                PAGE_READWRITE
-            );
-
-            if (!fileMemory)
-            {
-                debug writefln("Failed to allocate memory for file: %s (%d bytes)", fileName, fileSize);
-                return null;
-            }
-
-            DWORD bytesRead;
-            if (!ReadFile(file, fileMemory, fileSize, &bytesRead, null) || bytesRead != fileSize)
-            {
-                debug writefln("Failed to read file: %s (%d bytes)", fileName, fileSize);
-                VirtualFree(fileMemory, 0, MEM_RELEASE); // Free memory before returning
-
-                return null;
-            }
-
-            return fileMemory[0..fileSize];
-        }
-
-        /// See: hhd.platform.common.debugWriteEntireFile
-        bool debugWriteEntireFile(const(char)* fileName, void[] buffer)
-        {
-            assert(fileName, "File name is null");
-            assert(buffer, "Buffer is null");
-
-            HANDLE file = CreateFileA(
-                fileName,
-                GENERIC_WRITE,
-                0,
-                null,
-                CREATE_ALWAYS,
-                FILE_ATTRIBUTE_NORMAL,
-                null
-            );
-
-            if (file == INVALID_HANDLE_VALUE)
-            {
-                debug writeln("Failed to create or open file: ", fileName);
-                return false;
-            }
-
-            scope (exit)
-            {
-                CloseHandle(file);
-            }
-
-            DWORD bytesWritten;
-            DWORD bytesToWrite = cast(DWORD) buffer.length;
-            if (!WriteFile(file, buffer.ptr, bytesToWrite, &bytesWritten, null) || bytesWritten != bytesToWrite)
-            {
-                debug writefln("Failed to write file: %s (%d bytes)", fileName, buffer.length);
-                return false;
-            }
-
-            return true;
-        }
-
-        /// See: hhd.platform.common.debugFreeFileMemory
-        bool debugFreeFileMemory(void[] memory)
-        {
-            return VirtualFree(memory.ptr, 0, MEM_RELEASE) != 0;
-        }
-    }
-}
-
 private void
 win32LoadXInput() nothrow @nogc
 {
@@ -855,6 +741,45 @@ win32AllocateGameMemory(scope ref GameMemory memory) nothrow @nogc
     }
 }
 
+struct Win32Game
+{
+    HMODULE gameCodeDLL;
+    GameUpdateAndRenderProc updateAndRender;
+    GameOutputSoundProc outputSound;
+}
+
+private bool
+win32LoadGameCode(scope ref Win32Game game) nothrow @nogc
+{
+    if (game.gameCodeDLL)
+    {
+        FreeLibrary(game.gameCodeDLL);
+    }
+
+    CopyFile("build/hhd-game.dll", "build/hhd-game_loaded.dll", false);
+    HMODULE gameCodeDLL = LoadLibrary("build/hhd-game_loaded.dll");
+
+    if (!gameCodeDLL)
+    {
+        debug writeln("Failed to load hhd-game.dll");
+        return false;
+    }
+
+    Win32Game result;
+    result.gameCodeDLL = gameCodeDLL;
+    debug writefln("Loaded game code: %#x", gameCodeDLL);
+
+    result.updateAndRender = cast(GameUpdateAndRenderProc) GetProcAddress(gameCodeDLL, "gameUpdateAndRender");
+    debug assert(result.updateAndRender, "Failed to load gameUpdateAndRender");
+
+    result.outputSound = cast(GameOutputSoundProc) GetProcAddress(gameCodeDLL, "gameOutputSound");
+    debug assert(result.outputSound, "Failed to load gameOutputSound");
+
+    game = result;
+
+    return true;
+}
+
 extern (Windows) int
 main() nothrow @nogc
 {
@@ -870,6 +795,13 @@ main() nothrow @nogc
     if (!SetPriorityClass(process, HIGH_PRIORITY_CLASS))
     {
         debug writeln("Failed to set process priority");
+    }
+
+    Win32Game game;
+    if (!win32LoadGameCode(game))
+    {
+        debug writeln("Failed to load game code");
+        return 1;
     }
 
     win32LoadXInput();
@@ -1018,10 +950,23 @@ main() nothrow @nogc
     GameMemory gameMemory;
     win32AllocateGameMemory(gameMemory);
 
+    debug
+    {
+        import hhd.platform.win32.debug_;
+        gameMemory.debugFreeFileMemory = &debugFreeFileMemory;
+        gameMemory.debugWriteEntireFile = &debugWriteEntireFile;
+        gameMemory.debugReadEntireFile = &debugReadEntireFile;
+    }
+
     bool soundIsValid;
     immutable long perfCounterFrequency = win32GetPerformanceFrequency();
     long prevFrameTimer = win32GetPerformanceCounter();
     ulong prevCycleCount = win32GetCycleCounter();
+
+    debug
+    {
+        uint gameLoaderCounter = 0;
+    }
 
     while (globalIsRunning)
     {
@@ -1033,6 +978,19 @@ main() nothrow @nogc
             {
                 gameInput[currInputIndex].keyboards[keyboardIndex].keys[keyIndex].isDown =
                     gameInput[prevInputIndex].keyboards[keyboardIndex].keys[keyIndex].isDown;
+            }
+        }
+
+        debug
+        {
+            if (gameLoaderCounter++ >= 120)
+            {
+                if (!win32LoadGameCode(game))
+                {
+                    writeln("Failed to reload game code");
+                }
+
+                gameLoaderCounter = 0;
             }
         }
 
@@ -1106,7 +1064,7 @@ main() nothrow @nogc
             height: globalBackBuffer.height,
             pitch:  globalBackBuffer.pitch
         };
-        gameUpdateAndRender(gameMemory, gameInput[currInputIndex], gameOffscreenBuffer);
+        game.updateAndRender(gameMemory, gameInput[currInputIndex], gameOffscreenBuffer);
 
         DWORD playCursor;
         DWORD writeCursor;
@@ -1173,7 +1131,7 @@ main() nothrow @nogc
                 sampleCount: bytesToWrite / soundOutput.bytesPerSample
             };
 
-            gameOutputSound(gameMemory, gameSoundBuffer);
+            game.outputSound(gameMemory, gameSoundBuffer);
 
             win32FillSoundBuffer(soundOutput, gameSoundBuffer, byteToLock, bytesToWrite);
         }

@@ -3,16 +3,22 @@ module hhd.game.main;
 import hhd.math;
 import hhd.platform.common;
 
-extern (System) void
-gameOutputSound(
+struct GameState
+{
+    int toneHz;
+    int xOffset;
+    int yOffset;
+
+    float tSine;
+}
+
+export extern (System)
+void gameOutputSound(
     scope ref GameMemory memory,
     scope ref GameSoundOutputBuffer soundBuffer
 ) nothrow @nogc
 {
     enum TONE_VOLUME = 2500.0f;
-
-    static float tSine = 0.0f;
-
     GameState* gameState = memory.permanent!(GameState);
 
     // TODO: What do we do if toneHz is zero?
@@ -23,31 +29,29 @@ gameOutputSound(
     size_t sampleIndex = 0;
     foreach (_; 0..soundBuffer.sampleCount)
     {
-        short sampleValue = cast(short)(sinf(tSine) * TONE_VOLUME);
+        short sampleValue = cast(short)(sinf(gameState.tSine) * TONE_VOLUME);
 
         soundBuffer.samples[sampleIndex++] = sampleValue;
         soundBuffer.samples[sampleIndex++] = sampleValue;
 
-        tSine += tonePeriod != 0.0f
+        gameState.tSine += tonePeriod != 0.0f
             ? (2.0f * PI) / tonePeriod
             : 0.0f;
 
-        if (tSine > 2.0f * PI)
+        if (gameState.tSine > 2.0f * PI)
         {
-            tSine -= 2.0f * PI;
+            gameState.tSine -= 2.0f * PI;
         }
     }
 }
 
 pragma(inline, true)
-private uint
-createBRGPixel(uint red, uint green, uint blue) pure nothrow @nogc
+private uint createBRGPixel(uint red, uint green, uint blue) pure nothrow @nogc
 {
     return (red << 16) | (green << 8) | (blue << 0);
 }
 
-private void
-renderFunkyGradient(in ref GameOffscreenBuffer buffer, int xOffset, int yOffset) nothrow @nogc
+private void renderFunkyGradient(in ref GameOffscreenBuffer buffer, int xOffset, int yOffset) nothrow @nogc
 {
     ubyte* row = cast(ubyte*) buffer.memory;
 
@@ -60,22 +64,15 @@ renderFunkyGradient(in ref GameOffscreenBuffer buffer, int xOffset, int yOffset)
             ubyte blue  = cast(ubyte)(x + xOffset);
             ubyte green = cast(ubyte)(y + yOffset);
 
-            *pixel++ = createBRGPixel(0, green, blue);
+            *pixel++ = createBRGPixel(green, 0, blue);
         }
 
         row += buffer.pitch;
     }
 }
 
-struct GameState
-{
-    int toneHz;
-    int xOffset;
-    int yOffset;
-}
-
-extern (System) void
-gameUpdateAndRender(
+export extern (System)
+void gameUpdateAndRender(
     scope ref GameMemory memory,
     in ref GameInput input,
     in ref GameOffscreenBuffer buffer
@@ -86,19 +83,20 @@ gameUpdateAndRender(
     // TODO: Should this be a separate initialize hook?
     if (!memory.isInitialized)
     {
-        gameState.toneHz  = 256;
+        gameState.toneHz  = 512;
         gameState.xOffset = 0;
         gameState.yOffset = 0;
+        gameState.tSine   = 0.0f;
 
         memory.isInitialized = true;
 
         debug
         {
-            void[] data = debugReadEntireFile(__FILE__);
+            void[] data = memory.debugReadEntireFile(__FILE__);
             assert(data.length > 0, "Failed to read file.");
 
-            debugWriteEntireFile("tmp/debug.tmp", data);
-            debugFreeFileMemory(data);
+            memory.debugWriteEntireFile("tmp/debug.tmp", data);
+            memory.debugFreeFileMemory(data);
         }
     }
 

@@ -1,4 +1,4 @@
-module hhd.platform.common;
+module common.hhd.platform.common;
 
 struct GameOffscreenBuffer
 {
@@ -169,6 +169,20 @@ struct GameInput
     GameKeyboardInput[GAME_INPUT_KEYBOARDS_COUNT] keyboards;
 }
 
+// NOTE: These are only for development purposes
+// They are synchronous, unsafe, and blocking
+// It also doesn't handle failed writes
+debug
+{
+    // Platform layer APIs
+    extern (System) nothrow @nogc
+    {
+        alias DebugReadEntireFileProc = void[] function(const(char)* fileName);
+        alias DebugWriteEntireFileProc = bool function(const(char)* fileName, void[] buffer);
+        alias DebugFreeFileMemoryProc = bool function(void[] memory);
+    }
+}
+
 struct GameMemory
 {
     bool isInitialized;
@@ -180,6 +194,13 @@ struct GameMemory
     // NOTE: All memory must be zeroed at startup
     size_t transientStorageSize;
     void* transientStorage;
+
+    debug
+    {
+        DebugReadEntireFileProc debugReadEntireFile;
+        DebugWriteEntireFileProc debugWriteEntireFile;
+        DebugFreeFileMemoryProc debugFreeFileMemory;
+    }
 
     @property
     T* permanent(T)(size_t offset = 0) nothrow @nogc
@@ -197,20 +218,15 @@ struct GameMemory
 // Game layer APIs
 extern (System) nothrow @nogc
 {
-    void gameOutputSound(scope ref GameMemory memory, scope ref GameSoundOutputBuffer soundBuffer);
-    void gameUpdateAndRender(scope ref GameMemory memory, in ref GameInput input, in ref GameOffscreenBuffer buffer);
+    alias GameOutputSoundProc = void function(
+        scope ref GameMemory memory,
+        scope ref GameSoundOutputBuffer soundBuffer
+    );
+
+    alias GameUpdateAndRenderProc = void function(
+        scope ref GameMemory memory,
+        in ref GameInput input,
+        in ref GameOffscreenBuffer buffer
+    );
 }
 
-// Platform layer APIs
-extern (System) nothrow @nogc
-{
-    // NOTE: These are only for development purposes
-    // They are synchronous, unsafe, and blocking
-    // It also doesn't handle failed writes
-    debug
-    {
-        void[] debugReadEntireFile(const(char)* fileName);
-        bool debugWriteEntireFile(const(char)* fileName, void[] buffer);
-        void debugFreeFileMemory(void[] memory);
-    }
-}
